@@ -254,6 +254,7 @@ config MACH_JET
 	help
 	  Support for the HTC Jet
 
+
 config MACH_VALENTE_WX
 	depends on ARCH_MSM8960
 	bool "Valente#WX"
@@ -889,6 +890,14 @@ config MACH_FSM9XXX_SURF
 	  Support for the Qualcomm FSM9xxx femtocell
 	  chipset based SURF evaluation board and
 	  FFA board.
+
+config MACH_SHOOTER_U
+        depends on ARCH_MSM8X60
+        default n
+        bool "Shooter_U"
+        select SMP_PARALLEL_START
+        help
+          Support for the Shooter U device.
 
 endmenu
 

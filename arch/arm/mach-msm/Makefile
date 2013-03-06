@@ -359,6 +359,12 @@ obj-$(CONFIG_MACH_PYRAMID) += board-pyramid-mmc.o board-pyramid-wifi.o htc_wifi_
 obj-$(CONFIG_MACH_PYRAMID) += htc_util.o
 obj-$(CONFIG_MACH_PYRAMID) += board-pyramid-audio.o
 
+obj-$(CONFIG_MACH_SHOOTER_U) += board-shooter_u.o
+obj-$(CONFIG_MACH_SHOOTER_U) += board-shooter_u-keypad.o
+obj-$(CONFIG_MACH_SHOOTER_U) += board-shooter_u-audio.o
+obj-$(CONFIG_MACH_SHOOTER_U) += htc_bdaddress.o board-shooter_u-rfkill.o
+obj-$(CONFIG_MACH_SHOOTER_U) += board-shooter_u-mmc.o board-shooter_u-wifi.o
+
 CFLAGS_msm_vibrator.o += -Idrivers/staging/android
 CFLAGS_board-9615.o += -Idrivers/usb/gadget
 
