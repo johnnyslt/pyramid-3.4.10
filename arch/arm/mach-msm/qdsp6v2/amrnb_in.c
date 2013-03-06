@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,6 +8,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  *
 */
 
@@ -22,17 +27,55 @@
 #include <linux/msm_audio_amrnb.h>
 #include <asm/atomic.h>
 #include <asm/ioctls.h>
+#include <mach/qdsp6v2/apr_audio.h>
+#include <mach/qdsp6v2/q6asm.h>
 #include "audio_utils.h"
 
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
-
+/* Buffer with meta*/
 #define PCM_BUF_SIZE		(4096 + sizeof(struct meta_in))
 
+/* Maximum 10 frames in buffer with meta */
 #define FRAME_SIZE		(1 + ((32+sizeof(struct meta_out_dsp)) * 10))
 
+void q6asm_amrnb_in_cb(uint32_t opcode, uint32_t token,
+		uint32_t *payload, void *priv)
+{
+	struct q6audio_in *audio = (struct q6audio_in *)priv;
+	unsigned long flags;
+
+	pr_debug("%s:session id %d: opcode - %d\n", __func__,
+			audio->ac->session, opcode);
+
+	spin_lock_irqsave(&audio->dsp_lock, flags);
+	switch (opcode) {
+	case ASM_DATA_EVENT_READ_DONE:
+		audio_in_get_dsp_frames(audio, token, payload);
+		break;
+	case ASM_DATA_EVENT_WRITE_DONE:
+		atomic_inc(&audio->in_count);
+		wake_up(&audio->write_wait);
+		break;
+	case ASM_DATA_CMDRSP_EOS:
+		audio->eos_rsp = 1;
+		wake_up(&audio->read_wait);
+		break;
+	case ASM_STREAM_CMDRSP_GET_ENCDEC_PARAM:
+		break;
+	case ASM_STREAM_CMDRSP_GET_PP_PARAMS:
+		break;
+	case ASM_SESSION_EVENT_TX_OVERFLOW:
+		pr_aud_err("%s:session id %d: ASM_SESSION_EVENT_TX_OVERFLOW\n",
+			__func__, audio->ac->session);
+		break;
+	default:
+		pr_aud_err("%s:session id %d: Ignore opcode[0x%x]\n", __func__,
+				audio->ac->session, opcode);
+		break;
+	}
+	spin_unlock_irqrestore(&audio->dsp_lock, flags);
+}
+
+/* ------------------- device --------------------- */
 static long amrnb_in_ioctl(struct file *file,
 				unsigned int cmd, unsigned long arg)
 {
@@ -47,13 +90,13 @@ static long amrnb_in_ioctl(struct file *file,
 		pr_debug("%s:session id %d: default buf alloc[%d]\n", __func__,
 				audio->ac->session, audio->buf_alloc);
 		if (audio->enabled == 1) {
-			pr_info("%s:AUDIO_START already over\n", __func__);
+			pr_aud_info("%s:AUDIO_START already over\n", __func__);
 			rc = 0;
 			break;
 		}
 		rc = audio_in_buf_alloc(audio);
 		if (rc < 0) {
-			pr_err("%s:session id %d: buffer allocation failed\n",
+			pr_aud_err("%s:session id %d: buffer allocation failed\n",
 				__func__, audio->ac->session);
 			break;
 		}
@@ -64,8 +107,8 @@ static long amrnb_in_ioctl(struct file *file,
 			enc_cfg->dtx_enable);
 
 		if (rc < 0) {
-			pr_err("%s:session id %d: cmd amrnb media format block"
-				"failed\n", __func__, audio->ac->session);
+			pr_aud_err("%s:session id %d: cmd amrnb media format block\
+				failed\n", __func__, audio->ac->session);
 			break;
 		}
 		if (audio->feedback == NON_TUNNEL_MODE) {
@@ -74,8 +117,8 @@ static long amrnb_in_ioctl(struct file *file,
 				audio->pcm_cfg.channel_count);
 
 			if (rc < 0) {
-				pr_err("%s:session id %d: media format block"
-				"failed\n", __func__, audio->ac->session);
+				pr_aud_err("%s:session id %d: media format block\
+				failed\n", __func__, audio->ac->session);
 				break;
 			}
 		}
@@ -87,13 +130,13 @@ static long amrnb_in_ioctl(struct file *file,
 			audio->enabled = 1;
 		} else {
 			audio->enabled = 0;
-			pr_err("%s:session id %d: Audio Start procedure failed"
-					"rc=%d\n", __func__,
+			pr_aud_err("%s:session id %d: Audio Start procedure failed\
+					rc=%d\n", __func__,
 					audio->ac->session, rc);
 			break;
 		}
 		while (cnt++ < audio->str_cfg.buffer_count)
-			q6asm_read(audio->ac); 
+			q6asm_read(audio->ac); /* Push buffer to DSP */
 		rc = 0;
 		pr_debug("%s:session id %d: AUDIO_START success enable[%d]\n",
 				__func__, audio->ac->session, audio->enabled);
@@ -103,8 +146,8 @@ static long amrnb_in_ioctl(struct file *file,
 		pr_debug("%s:AUDIO_STOP\n", __func__);
 		rc = audio_in_disable(audio);
 		if (rc  < 0) {
-			pr_err("%s:session id %d: Audio Stop procedure failed"
-				"rc=%d\n", __func__,
+			pr_aud_err("%s:session id %d: Audio Stop procedure failed\
+				rc=%d\n", __func__,
 				audio->ac->session, rc);
 			break;
 		}
@@ -127,11 +170,14 @@ static long amrnb_in_ioctl(struct file *file,
 		}
 		if (cfg.band_mode > 8 ||
 			 cfg.band_mode < 1) {
-			pr_err("%s:session id %d: invalid band mode\n",
+			pr_aud_err("%s:session id %d: invalid band mode\n",
 				__func__, audio->ac->session);
 			rc = -EINVAL;
 			break;
 		}
+		/* AMR NB encoder accepts values between 0-7
+		   while openmax provides value between 1-8
+		   as per spec */
 		enc_cfg->band_mode = (cfg.band_mode - 1);
 		enc_cfg->dtx_enable = (cfg.dtx_enable ? 1 : 0);
 		enc_cfg->frame_format = 0;
@@ -155,16 +201,16 @@ static int amrnb_in_open(struct inode *inode, struct file *file)
 	audio = kzalloc(sizeof(struct q6audio_in), GFP_KERNEL);
 
 	if (audio == NULL) {
-		pr_err("%s Could not allocate memory for amrnb"
-			"driver\n", __func__);
+		pr_aud_err("%s: Could not allocate memory for amrnb\
+			driver\n", __func__);
 		return -ENOMEM;
 	}
-	
+	/* Allocate memory for encoder config param */
 	audio->enc_cfg = kzalloc(sizeof(struct msm_audio_amrnb_enc_config_v2),
 				GFP_KERNEL);
 	if (audio->enc_cfg == NULL) {
-		pr_err("%s:session id %d: Could not allocate memory for aac"
-				"config param\n", __func__, audio->ac->session);
+		pr_aud_err("%s:session id %d: Could not allocate memory for aac\
+				config param\n", __func__, audio->ac->session);
 		kfree(audio);
 		return -ENOMEM;
 	}
@@ -177,6 +223,9 @@ static int amrnb_in_open(struct inode *inode, struct file *file)
 	init_waitqueue_head(&audio->read_wait);
 	init_waitqueue_head(&audio->write_wait);
 
+	/* Settings will be re-config at AUDIO_SET_CONFIG,
+	* but at least we need to have initial config
+	*/
 	audio->str_cfg.buffer_size = FRAME_SIZE;
 	audio->str_cfg.buffer_count = FRAME_NUM;
 	audio->min_frame_size = 32;
@@ -190,54 +239,54 @@ static int amrnb_in_open(struct inode *inode, struct file *file)
 	audio->buf_cfg.meta_info_enable = 0x01;
 	audio->buf_cfg.frames_per_buf = 0x01;
 
-	audio->ac = q6asm_audio_client_alloc((app_cb)q6asm_in_cb,
+	audio->ac = q6asm_audio_client_alloc((app_cb)q6asm_amrnb_in_cb,
 				(void *)audio);
 
 	if (!audio->ac) {
-		pr_err("%s: Could not allocate memory for audio"
-				"client\n", __func__);
+		pr_aud_err("%s: Could not allocate memory for audio\
+				client\n", __func__);
 		kfree(audio->enc_cfg);
 		kfree(audio);
 		return -ENOMEM;
 	}
 
-	
+	/* open amrnb encoder in T/NT mode */
 	if ((file->f_mode & FMODE_WRITE) &&
 		(file->f_mode & FMODE_READ)) {
 		audio->feedback = NON_TUNNEL_MODE;
 		rc = q6asm_open_read_write(audio->ac, FORMAT_AMRNB,
 					FORMAT_LINEAR_PCM);
 		if (rc < 0) {
-			pr_err("%s:session id %d: NT mode Open failed rc=%d\n",
+			pr_aud_err("%s:session id %d: NT mode Open failed rc=%d\n",
 				__func__, audio->ac->session, rc);
 			rc = -ENODEV;
 			goto fail;
 		}
-		pr_info("%s:session id %d: NT mode encoder success\n",
+		pr_aud_info("%s:session id %d: NT mode encoder success\n",
 				__func__, audio->ac->session);
 	} else if (!(file->f_mode & FMODE_WRITE) &&
 				(file->f_mode & FMODE_READ)) {
 		audio->feedback = TUNNEL_MODE;
 		rc = q6asm_open_read(audio->ac, FORMAT_AMRNB);
 		if (rc < 0) {
-			pr_err("%s:session id %d: T mode Open failed rc=%d\n",
+			pr_aud_err("%s:session id %d: T mode Open failed rc=%d\n",
 				__func__, audio->ac->session, rc);
 			rc = -ENODEV;
 			goto fail;
 		}
-		
+		/* register for tx overflow (valid for tunnel mode only) */
 		rc = q6asm_reg_tx_overflow(audio->ac, 0x01);
 		if (rc < 0) {
-			pr_err("%s:session id %d: TX Overflow registration"
-				"failed rc=%d\n", __func__, audio->ac->session,
+			pr_aud_err("%s:session id %d: TX Overflow registration\
+				failed rc=%d\n", __func__, audio->ac->session,
 				rc);
 			rc = -ENODEV;
 			goto fail;
 		}
-		pr_info("%s:session id %d: T mode encoder success\n",
+		pr_aud_info("%s:session id %d: T mode encoder success\n",
 				__func__, audio->ac->session);
 	} else {
-		pr_err("%s:session id %d: Unexpected mode\n", __func__,
+		pr_aud_err("%s:session id %d: Unexpected mode\n", __func__,
 				audio->ac->session);
 		rc = -EACCES;
 		goto fail;
@@ -249,7 +298,7 @@ static int amrnb_in_open(struct inode *inode, struct file *file)
 	audio->enc_ioctl = amrnb_in_ioctl;
 	file->private_data = audio;
 
-	pr_info("%s:session id %d: success\n", __func__, audio->ac->session);
+	pr_aud_info("%s:session id %d: success\n", __func__, audio->ac->session);
 	return 0;
 fail:
 	q6asm_audio_client_free(audio->ac);

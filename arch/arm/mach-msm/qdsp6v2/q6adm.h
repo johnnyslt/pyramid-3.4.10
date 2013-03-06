@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are
@@ -24,17 +24,36 @@
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
  * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
  */
-#ifndef __MACH_QDSP6_V2_SNDDEV_HDMI_H
-#define __MACH_QDSP6_V2_SNDDEV_HDMI_H
+#ifndef __Q6_ADM_H__
+#define __Q6_ADM_H__
+#include <mach/qdsp6v2/q6afe.h>
 
-struct snddev_hdmi_data {
-	u32 capability;		/* RX or TX */
-	const char *name;
-	u32 copp_id;		/* audpp routing */
-	u32 acdb_id;		/* Audio Cal purpose */
-	u8 channel_mode;
-	u32 default_sample_rate;
+/* multiple copp per stream. */
+struct route_payload {
+	unsigned int copp_ids[AFE_MAX_PORTS];
+	unsigned short num_copps;
+	unsigned int session_id;
 };
+
+int adm_open(int port, int path, int rate, int mode, int topology);
+
+int adm_memory_map_regions(uint32_t *buf_add, uint32_t mempool_id,
+				uint32_t *bufsz, uint32_t bufcnt);
+
+int adm_memory_unmap_regions(uint32_t *buf_add, uint32_t *bufsz,
+						uint32_t bufcnt);
+
+int adm_close(int port);
+
+int adm_matrix_map(int session_id, int path, int num_copps,
+				unsigned int *port_id, int copp_id);
+
+#ifdef CONFIG_MSM8X60_RTAC
+int adm_get_copp_id(int port_id);
 #endif
+
+int q6adm_enable_effect(int port_id, uint32_t module_id, uint32_t param_id,
+		uint32_t payload_size, void *payload);
+
+#endif /* __Q6_ADM_H__ */

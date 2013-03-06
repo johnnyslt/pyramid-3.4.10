@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,6 +8,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  *
  */
 #include <linux/module.h>
@@ -20,69 +25,58 @@
 #include <linux/pmic8058-othc.h>
 #include <linux/slab.h>
 #include <linux/regulator/consumer.h>
-#include <linux/moduleparam.h>
-#include <linux/pm_qos.h>
-
 #include <asm/uaccess.h>
 #include <mach/qdsp6v2/audio_dev_ctl.h>
-#include <mach/qdsp6v2/audio_acdb.h>
+#include <mach/qdsp6v2/apr_audio.h>
 #include <mach/vreg.h>
 #include <mach/pmic.h>
 #include <mach/debug_mm.h>
-#include <mach/cpuidle.h>
-
-#include <sound/q6afe.h>
-#include <sound/apr_audio.h>
 #include <mach/qdsp6v2/snddev_icodec.h>
+#include <linux/spi/spi_aic3254.h>
+#include <mach/qdsp6v2/q6afe.h>
+#include "audio_acdb.h"
 
-#define SNDDEV_ICODEC_PCM_SZ 32 
-#define SNDDEV_ICODEC_MUL_FACTOR 3 
+#define SNDDEV_ICODEC_PCM_SZ 32 /* 16 bit / sample stereo mode */
+#define SNDDEV_ICODEC_MUL_FACTOR 3 /* Multi by 8 Shift by 3  */
 #define SNDDEV_ICODEC_CLK_RATE(freq) \
 	(((freq) * (SNDDEV_ICODEC_PCM_SZ)) << (SNDDEV_ICODEC_MUL_FACTOR))
 #define SNDDEV_LOW_POWER_MODE 0
 #define SNDDEV_HIGH_POWER_MODE 1
+/* Voltage required for S4 in microVolts, 2.2V or 2200000microvolts */
 #define SNDDEV_VREG_8058_S4_VOLTAGE (2200000)
+/* Load Current required for S4 in microAmps,
+   36mA - 56mA */
 #define SNDDEV_VREG_LOW_POWER_LOAD (36000)
 #define SNDDEV_VREG_HIGH_POWER_LOAD (56000)
 
-#ifdef CONFIG_MACH_PYRAMID
-
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
-
 static struct q6v2audio_icodec_ops default_audio_ops;
 static struct q6v2audio_icodec_ops *audio_ops = &default_audio_ops;
-#endif
+static int support_aic3254;
+static int support_adie;
+static int support_aic3254_use_mclk;
+static int aic3254_use_mclk_counter;
+int msm_codec_i2s_slave_mode = 1;
+static struct q6v2audio_aic3254_ops default_aic3254_ops;
+static struct q6v2audio_aic3254_ops *aic3254_ops = &default_aic3254_ops;
 
-bool msm_codec_i2s_slave_mode;
-
-#ifndef CONFIG_MACH_PYRAMID 
-struct snddev_icodec_state {
-	struct snddev_icodec_data *data;
-	struct adie_codec_path *adie_path;
-	u32 sample_rate;
-	u32 enabled;
-};
-#endif
-
+/* Global state for the driver */
 struct snddev_icodec_drv_state {
 	struct mutex rx_lock;
-	struct mutex lb_lock;
 	struct mutex tx_lock;
-	u32 rx_active; 
-	u32 tx_active; 
+	u32 rx_active; /* ensure one rx device at a time */
+	u32 tx_active; /* ensure one tx device at a time */
 	struct clk *rx_osrclk;
 	struct clk *rx_bitclk;
 	struct clk *tx_osrclk;
 	struct clk *tx_bitclk;
 
-	struct pm_qos_request rx_pm_qos_req;
-	struct pm_qos_request tx_pm_qos_req;
+	struct wake_lock rx_idlelock;
+	struct wake_lock tx_idlelock;
 
-	
+	/* handle to pmic8058 regulator smps4 */
 	struct regulator *snddev_vreg;
+
+	struct mutex rx_mclk_lock;
 };
 
 static struct snddev_icodec_drv_state snddev_icodec_drv;
@@ -94,7 +88,7 @@ struct regulator *vreg_init(void)
 
 	vreg_ptr = regulator_get(NULL, "8058_s4");
 	if (IS_ERR(vreg_ptr)) {
-		pr_err("%s: regulator_get 8058_s4 failed\n", __func__);
+		pr_aud_err("%s: regulator_get 8058_s4 failed\n", __func__);
 		return NULL;
 	}
 
@@ -117,7 +111,7 @@ static void vreg_mode_vote(struct regulator *vreg, int enable, int mode)
 	if (enable) {
 		rc = regulator_enable(vreg);
 		if (rc != 0)
-			pr_err("%s:Enabling regulator failed\n", __func__);
+			pr_aud_err("%s:Enabling regulator failed\n", __func__);
 		else {
 			if (mode)
 				regulator_set_optimum_mode(vreg,
@@ -129,7 +123,7 @@ static void vreg_mode_vote(struct regulator *vreg, int enable, int mode)
 	} else {
 		rc = regulator_disable(vreg);
 		if (rc != 0)
-			pr_err("%s:Disabling regulator failed\n", __func__);
+			pr_aud_err("%s:Disabling regulator failed\n", __func__);
 	}
 }
 
@@ -145,61 +139,56 @@ static struct msm_cdcclk_ctl_state the_msm_cdcclk_ctl_state;
 static int msm_snddev_rx_mclk_request(void)
 {
 	int rc = 0;
-
-#ifndef CONFIG_MACH_PYRAMID
+/*
 	rc = gpio_request(the_msm_cdcclk_ctl_state.rx_mclk,
 		"MSM_SNDDEV_RX_MCLK");
 	if (rc < 0) {
-		pr_err("%s: GPIO request for MSM SNDDEV RX failed\n", __func__);
+		pr_aud_err("%s: GPIO request for MSM SNDDEV RX failed\n", __func__);
 		return rc;
 	}
 	the_msm_cdcclk_ctl_state.rx_mclk_requested = 1;
-#endif
+*/
 	return rc;
 }
 static int msm_snddev_tx_mclk_request(void)
 {
 	int rc = 0;
-
-#ifndef CONFIG_MACH_PYRAMID
+/*
 	rc = gpio_request(the_msm_cdcclk_ctl_state.tx_mclk,
 		"MSM_SNDDEV_TX_MCLK");
 	if (rc < 0) {
-		pr_err("%s: GPIO request for MSM SNDDEV TX failed\n", __func__);
+		pr_aud_err("%s: GPIO request for MSM SNDDEV TX failed\n", __func__);
 		return rc;
 	}
 	the_msm_cdcclk_ctl_state.tx_mclk_requested = 1;
-#endif
+*/
 	return rc;
 }
 static void msm_snddev_rx_mclk_free(void)
 {
-#ifndef CONFIG_MACH_PYRAMID
 	if (the_msm_cdcclk_ctl_state.rx_mclk_requested) {
 		gpio_free(the_msm_cdcclk_ctl_state.rx_mclk);
 		the_msm_cdcclk_ctl_state.rx_mclk_requested = 0;
 	}
-#endif
 }
 static void msm_snddev_tx_mclk_free(void)
 {
-#ifndef CONFIG_MACH_PYRAMID
 	if (the_msm_cdcclk_ctl_state.tx_mclk_requested) {
 		gpio_free(the_msm_cdcclk_ctl_state.tx_mclk);
 		the_msm_cdcclk_ctl_state.tx_mclk_requested = 0;
 	}
-#endif
 }
+
 static int get_msm_cdcclk_ctl_gpios(struct platform_device *pdev)
 {
 	int rc = 0;
 	struct resource *res;
 
-	
+	/* Claim all of the GPIOs. */
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO,
 			"msm_snddev_rx_mclk");
 	if (!res) {
-		pr_err("%s: failed to get gpio MSM SNDDEV RX\n", __func__);
+		pr_aud_err("%s: failed to get gpio MSM SNDDEV RX\n", __func__);
 		return -ENODEV;
 	}
 	the_msm_cdcclk_ctl_state.rx_mclk = res->start;
@@ -208,7 +197,7 @@ static int get_msm_cdcclk_ctl_gpios(struct platform_device *pdev)
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO,
 			"msm_snddev_tx_mclk");
 	if (!res) {
-		pr_err("%s: failed to get gpio MSM SNDDEV TX\n", __func__);
+		pr_aud_err("%s: failed to get gpio MSM SNDDEV TX\n", __func__);
 		return -ENODEV;
 	}
 	the_msm_cdcclk_ctl_state.tx_mclk = res->start;
@@ -220,9 +209,11 @@ static int msm_cdcclk_ctl_probe(struct platform_device *pdev)
 {
 	int rc = 0;
 
+	pr_aud_info("%s:\n", __func__);
+
 	rc = get_msm_cdcclk_ctl_gpios(pdev);
 	if (rc < 0) {
-		pr_err("%s: GPIO configuration failed\n", __func__);
+		pr_aud_err("%s: GPIO configuration failed\n", __func__);
 		return -ENODEV;
 	}
 	return rc;
@@ -232,84 +223,68 @@ static struct platform_driver msm_cdcclk_ctl_driver = {
 	.driver = { .name = "msm_cdcclk_ctl"}
 };
 
-static int snddev_icodec_open_lb(struct snddev_icodec_state *icodec)
+static int snddev_icodec_rxclk_enable(struct snddev_icodec_state *icodec,
+		int en)
 {
 	int trc;
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
 
-	if (drv->snddev_vreg)
-		vreg_mode_vote(drv->snddev_vreg, 1,
-					SNDDEV_LOW_POWER_MODE);
+	mutex_lock(&drv->rx_mclk_lock);
+	if (en) {
+		if (aic3254_use_mclk_counter == 0) {
+			drv->rx_osrclk = clk_get(0, "i2s_spkr_osr_clk");
+			if (IS_ERR(drv->rx_osrclk)) {
+				pr_aud_err("%s turning on RX MCLK Error\n", \
+					__func__);
+				goto error_invalid_osrclk;
+			}
 
-	if (icodec->data->voltage_on)
-		icodec->data->voltage_on();
+			trc = clk_set_rate(drv->rx_osrclk, \
+					SNDDEV_ICODEC_CLK_RATE(\
+					icodec->sample_rate));
+			if (IS_ERR_VALUE(trc)) {
+				pr_aud_err("ERROR setting RX m clock1\n");
+				goto error_invalid_freq;
+			}
+			clk_enable(drv->rx_osrclk);
+		}
 
-	trc = adie_codec_open(icodec->data->profile, &icodec->adie_path);
-	if (IS_ERR_VALUE(trc))
-		pr_err("%s: adie codec open failed\n", __func__);
-	else
-		adie_codec_setpath(icodec->adie_path,
-					icodec->sample_rate, 256);
+		aic3254_use_mclk_counter++;
 
-	if (icodec->adie_path)
-		adie_codec_proceed_stage(icodec->adie_path,
-					ADIE_CODEC_DIGITAL_ANALOG_READY);
+	} else {
+		if (aic3254_use_mclk_counter > 0) {
+			aic3254_use_mclk_counter--;
+			if (aic3254_use_mclk_counter == 0)
+				clk_disable(drv->rx_osrclk);
+		} else
+			pr_aud_info("%s: counter error!\n", __func__);
+	}
 
-	if (icodec->data->pamp_on)
-		icodec->data->pamp_on();
+	mutex_unlock(&drv->rx_mclk_lock);
 
-	icodec->enabled = 1;
+	pr_aud_info("%s: en: %d counter: %d\n", __func__, en, \
+			aic3254_use_mclk_counter);
 
 	return 0;
-}
-static int initialize_msm_icodec_gpios(struct platform_device *pdev)
-{
-	int rc = 0;
-	struct resource *res;
-	int i = 0;
-	int *reg_defaults = pdev->dev.platform_data;
 
-	while ((res = platform_get_resource(pdev, IORESOURCE_IO, i))) {
-		rc = gpio_request(res->start, res->name);
-		if (rc) {
-			pr_err("%s: icodec gpio %d request failed\n", __func__,
-				res->start);
-			goto err;
-		} else {
+error_invalid_osrclk:
+error_invalid_freq:
+	pr_aud_err("%s: encounter error\n", __func__);
+	msm_snddev_rx_mclk_free();
 
-			gpio_direction_output(res->start, reg_defaults[i]);
-			gpio_free(res->start);
-		}
-		i++;
-	}
-err:
-	return rc;
+	mutex_unlock(&drv->rx_mclk_lock);
+	return -ENODEV;
 }
-static int msm_icodec_gpio_probe(struct platform_device *pdev)
-{
-	int rc = 0;
-
-	rc = initialize_msm_icodec_gpios(pdev);
-	if (rc < 0) {
-		pr_err("%s: GPIO configuration failed\n", __func__);
-		return -ENODEV;
-	}
-	return rc;
-}
-static struct platform_driver msm_icodec_gpio_driver = {
-	.probe = msm_icodec_gpio_probe,
-	.driver = { .name = "msm_icodec_gpio"}
-};
 
 static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 {
 	int trc;
+	int rc_clk;
 	int afe_channel_mode;
 	union afe_port_config afe_config;
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
 
-	pm_qos_update_request(&drv->rx_pm_qos_req,
-			      msm_cpuidle_get_deep_idle_latency());
+	wake_lock(&drv->rx_idlelock);
 
 	if (drv->snddev_vreg) {
 		if (!strcmp(icodec->data->name, "headset_stereo_rx"))
@@ -319,47 +294,83 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 			vreg_mode_vote(drv->snddev_vreg, 1,
 					SNDDEV_HIGH_POWER_MODE);
 	}
-	msm_snddev_rx_mclk_request();
 
-	drv->rx_osrclk = clk_get_sys(NULL, "i2s_spkr_osr_clk");
-	if (IS_ERR(drv->rx_osrclk))
-		pr_err("%s master clock Error\n", __func__);
+	if (support_aic3254_use_mclk) {
+		rc_clk = snddev_icodec_rxclk_enable(icodec, 1);
+		if (IS_ERR_VALUE(rc_clk)) {
+			pr_aud_err("%s Enable RX master clock Error\n", \
+					__func__);
+			goto error_invalid_freq;
+		}
+	} else {
+		msm_snddev_rx_mclk_request();
 
-	trc =  clk_set_rate(drv->rx_osrclk,
-			SNDDEV_ICODEC_CLK_RATE(icodec->sample_rate));
-	if (IS_ERR_VALUE(trc)) {
-		pr_err("ERROR setting m clock1\n");
-		goto error_invalid_freq;
+		drv->rx_osrclk = clk_get(0, "i2s_spkr_osr_clk");
+		if (IS_ERR(drv->rx_osrclk))
+			pr_aud_err("%s master clock Error\n", __func__);
+
+		trc =  clk_set_rate(drv->rx_osrclk,
+				SNDDEV_ICODEC_CLK_RATE(icodec->sample_rate));
+		if (IS_ERR_VALUE(trc)) {
+			pr_aud_err("ERROR setting m clock1\n");
+			goto error_invalid_freq;
+		}
+
+		clk_enable(drv->rx_osrclk);
 	}
 
-	clk_prepare_enable(drv->rx_osrclk);
-	drv->rx_bitclk = clk_get_sys(NULL, "i2s_spkr_bit_clk");
+	drv->rx_bitclk = clk_get(0, "i2s_spkr_bit_clk");
 	if (IS_ERR(drv->rx_bitclk))
-		pr_err("%s clock Error\n", __func__);
+		pr_aud_err("%s clock Error\n", __func__);
+
+	/* ***************************************
+	 * 1. CPU MASTER MODE:
+	 *     Master clock = Sample Rate * OSR rate bit clock
+	 * OSR Rate bit clock = bit/sample * channel master
+	 * clock / bit clock = divider value = 8
+	 *
+	 * 2. CPU SLAVE MODE:
+	 *     bitclk = 0
+	 * *************************************** */
 
 	if (msm_codec_i2s_slave_mode) {
-		pr_info("%s: configuring bit clock for slave mode\n",
+		pr_debug("%s: configuring bit clock for slave mode\n",
 				__func__);
 		trc =  clk_set_rate(drv->rx_bitclk, 0);
 	} else
 		trc =  clk_set_rate(drv->rx_bitclk, 8);
 
 	if (IS_ERR_VALUE(trc)) {
-		pr_err("ERROR setting m clock1\n");
+		pr_aud_err("ERROR setting m clock1\n");
 		goto error_adie;
 	}
-	clk_prepare_enable(drv->rx_bitclk);
+	clk_enable(drv->rx_bitclk);
 
 	if (icodec->data->voltage_on)
-		icodec->data->voltage_on();
+		icodec->data->voltage_on(1);
 
-	
-	trc = adie_codec_open(icodec->data->profile, &icodec->adie_path);
-	if (IS_ERR_VALUE(trc))
-		pr_err("%s: adie codec open failed\n", __func__);
-	else
-		adie_codec_setpath(icodec->adie_path,
-					icodec->sample_rate, 256);
+	if (support_aic3254) {
+		if (aic3254_ops->aic3254_set_mode) {
+			if (msm_get_call_state() == 1)
+				aic3254_ops->aic3254_set_mode(AIC3254_CONFIG_RX,
+					icodec->data->aic3254_voc_id);
+			else
+				aic3254_ops->aic3254_set_mode(AIC3254_CONFIG_RX,
+					icodec->data->aic3254_id);
+		}
+	}
+	if (support_adie) {
+		/* Configure ADIE */
+		trc = adie_codec_open(icodec->data->profile, &icodec->adie_path);
+		if (IS_ERR_VALUE(trc))
+			pr_aud_err("%s: adie codec open failed\n", __func__);
+		else
+			adie_codec_setpath(icodec->adie_path,
+						icodec->sample_rate, 256);
+		/* OSR default to 256, can be changed for power optimization
+		 * If OSR is to be changed, need clock API for setting the divider
+		 */
+	}
 
 	switch (icodec->data->channel_mode) {
 	case 2:
@@ -373,7 +384,6 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 	afe_config.mi2s.channel = afe_channel_mode;
 	afe_config.mi2s.bitwidth = 16;
 	afe_config.mi2s.line = 1;
-	afe_config.mi2s.format = MSM_AFE_I2S_FORMAT_LPCM;
 	if (msm_codec_i2s_slave_mode)
 		afe_config.mi2s.ws = 0;
 	else
@@ -382,101 +392,125 @@ static int snddev_icodec_open_rx(struct snddev_icodec_state *icodec)
 	trc = afe_open(icodec->data->copp_id, &afe_config, icodec->sample_rate);
 
 	if (trc < 0)
-		pr_err("%s: afe open failed, trc = %d\n", __func__, trc);
+		pr_aud_err("%s: afe open failed, trc = %d\n", __func__, trc);
 
-	
-	if (icodec->adie_path) {
-		adie_codec_proceed_stage(icodec->adie_path,
+	if (support_adie) {
+		/* Enable ADIE */
+		if (icodec->adie_path) {
+			adie_codec_proceed_stage(icodec->adie_path,
 					ADIE_CODEC_DIGITAL_READY);
-		adie_codec_proceed_stage(icodec->adie_path,
+			adie_codec_proceed_stage(icodec->adie_path,
 					ADIE_CODEC_DIGITAL_ANALOG_READY);
-	}
-
-	if (msm_codec_i2s_slave_mode)
-		adie_codec_set_master_mode(icodec->adie_path, 1);
-	else
-		adie_codec_set_master_mode(icodec->adie_path, 0);
-
-	
-	if (icodec->data->pamp_on) {
-		if (icodec->data->pamp_on()) {
-			pr_err("%s: Error turning on rx power\n", __func__);
-			goto error_pamp;
 		}
+
+		if (msm_codec_i2s_slave_mode)
+			adie_codec_set_master_mode(icodec->adie_path, 1);
+		else
+			adie_codec_set_master_mode(icodec->adie_path, 0);
 	}
+	/* Enable power amplifier */
+	if (icodec->data->pamp_on)
+		icodec->data->pamp_on(1);
 
 	icodec->enabled = 1;
 
-	pm_qos_update_request(&drv->rx_pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	wake_unlock(&drv->rx_idlelock);
 	return 0;
 
-error_pamp:
 error_adie:
-	clk_disable_unprepare(drv->rx_osrclk);
+	clk_disable(drv->rx_bitclk);
+	clk_disable(drv->rx_osrclk);
 error_invalid_freq:
 
-	pr_err("%s: encounter error\n", __func__);
+	pr_aud_err("%s: encounter error\n", __func__);
+	msm_snddev_rx_mclk_free();
 
-	pm_qos_update_request(&drv->rx_pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	wake_unlock(&drv->rx_idlelock);
 	return -ENODEV;
 }
 
 static int snddev_icodec_open_tx(struct snddev_icodec_state *icodec)
 {
 	int trc;
+	int rc_clk;
 	int afe_channel_mode;
 	union afe_port_config afe_config;
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;;
 
-	pm_qos_update_request(&drv->tx_pm_qos_req,
-			      msm_cpuidle_get_deep_idle_latency());
+	wake_lock(&drv->tx_idlelock);
 
 	if (drv->snddev_vreg)
 		vreg_mode_vote(drv->snddev_vreg, 1, SNDDEV_HIGH_POWER_MODE);
 
-	
-	if (icodec->data->pamp_on) {
-		if (icodec->data->pamp_on()) {
-			pr_err("%s: Error turning on tx power\n", __func__);
-			goto error_pamp;
+	if (support_aic3254_use_mclk) {
+		rc_clk = snddev_icodec_rxclk_enable(icodec, 1);
+		if (IS_ERR_VALUE(rc_clk)) {
+			pr_aud_err("%s Enable RX master clock Error\n", \
+					__func__);
+			goto error_invalid_osrclk;
 		}
 	}
 
 	msm_snddev_tx_mclk_request();
 
-	drv->tx_osrclk = clk_get_sys(NULL, "i2s_mic_osr_clk");
-	if (IS_ERR(drv->tx_osrclk))
-		pr_err("%s master clock Error\n", __func__);
+	drv->tx_osrclk = clk_get(0, "i2s_mic_osr_clk");
+	if (IS_ERR(drv->tx_osrclk)) {
+		pr_aud_err("%s master clock Error\n", __func__);
+		goto error_invalid_osrclk;
+	}
 
 	trc =  clk_set_rate(drv->tx_osrclk,
 			SNDDEV_ICODEC_CLK_RATE(icodec->sample_rate));
 	if (IS_ERR_VALUE(trc)) {
-		pr_err("ERROR setting m clock1\n");
+		pr_aud_err("ERROR setting m clock1\n");
 		goto error_invalid_freq;
 	}
 
-	clk_prepare_enable(drv->tx_osrclk);
-	drv->tx_bitclk = clk_get_sys(NULL, "i2s_mic_bit_clk");
-	if (IS_ERR(drv->tx_bitclk))
-		pr_err("%s clock Error\n", __func__);
+	clk_enable(drv->tx_osrclk);
 
+	drv->tx_bitclk = clk_get(0, "i2s_mic_bit_clk");
+	if (IS_ERR(drv->tx_bitclk)) {
+		pr_aud_err("%s clock Error\n", __func__);
+		goto error_invalid_bitclk;
+	}
+
+	/* ***************************************
+	 * 1. CPU MASTER MODE:
+	 *     Master clock = Sample Rate * OSR rate bit clock
+	 * OSR Rate bit clock = bit/sample * channel master
+	 * clock / bit clock = divider value = 8
+	 *
+	 * 2. CPU SLAVE MODE:
+	 *     bitclk = 0
+	 * *************************************** */
 	if (msm_codec_i2s_slave_mode) {
-		pr_info("%s: configuring bit clock for slave mode\n",
+		pr_debug("%s: configuring bit clock for slave mode\n",
 				__func__);
 		trc =  clk_set_rate(drv->tx_bitclk, 0);
 	} else
 		trc =  clk_set_rate(drv->tx_bitclk, 8);
 
-	clk_prepare_enable(drv->tx_bitclk);
+	clk_enable(drv->tx_bitclk);
 
-	
-	trc = adie_codec_open(icodec->data->profile, &icodec->adie_path);
-	if (IS_ERR_VALUE(trc))
-		pr_err("%s: adie codec open failed\n", __func__);
-	else
-		adie_codec_setpath(icodec->adie_path,
-					icodec->sample_rate, 256);
-
+	if (support_aic3254) {
+		if (aic3254_ops->aic3254_set_mode) {
+			if (msm_get_call_state() == 1)
+				aic3254_ops->aic3254_set_mode(AIC3254_CONFIG_TX,
+					icodec->data->aic3254_voc_id);
+			else
+				aic3254_ops->aic3254_set_mode(AIC3254_CONFIG_TX,
+					icodec->data->aic3254_id);
+		}
+	}
+	if (support_adie) {
+		/* Enable ADIE */
+		trc = adie_codec_open(icodec->data->profile, &icodec->adie_path);
+		if (IS_ERR_VALUE(trc))
+			pr_aud_err("%s: adie codec open failed\n", __func__);
+		else
+			adie_codec_setpath(icodec->adie_path,
+						icodec->sample_rate, 256);
+	}
 	switch (icodec->data->channel_mode) {
 	case 2:
 		afe_channel_mode = MSM_AFE_STEREO;
@@ -489,7 +523,6 @@ static int snddev_icodec_open_tx(struct snddev_icodec_state *icodec)
 	afe_config.mi2s.channel = afe_channel_mode;
 	afe_config.mi2s.bitwidth = 16;
 	afe_config.mi2s.line = 1;
-	afe_config.mi2s.format = MSM_AFE_I2S_FORMAT_LPCM;
 	if (msm_codec_i2s_slave_mode)
 		afe_config.mi2s.ws = 0;
 	else
@@ -497,128 +530,138 @@ static int snddev_icodec_open_tx(struct snddev_icodec_state *icodec)
 
 	trc = afe_open(icodec->data->copp_id, &afe_config, icodec->sample_rate);
 
-	if (icodec->adie_path) {
+	if (icodec->adie_path && support_adie) {
 		adie_codec_proceed_stage(icodec->adie_path,
 					ADIE_CODEC_DIGITAL_READY);
 		adie_codec_proceed_stage(icodec->adie_path,
 					ADIE_CODEC_DIGITAL_ANALOG_READY);
+
+		if (msm_codec_i2s_slave_mode)
+			adie_codec_set_master_mode(icodec->adie_path, 1);
+		else
+			adie_codec_set_master_mode(icodec->adie_path, 0);
 	}
 
-	if (msm_codec_i2s_slave_mode)
-		adie_codec_set_master_mode(icodec->adie_path, 1);
-	else
-		adie_codec_set_master_mode(icodec->adie_path, 0);
+	/* Reuse pamp_on for TX platform-specific setup  */
+	if (icodec->data->pamp_on)
+		icodec->data->pamp_on(1);
 
 	icodec->enabled = 1;
 
-	pm_qos_update_request(&drv->tx_pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	wake_unlock(&drv->tx_idlelock);
 	return 0;
 
+error_invalid_bitclk:
+	clk_disable(drv->tx_osrclk);
 error_invalid_freq:
+error_invalid_osrclk:
+	if (icodec->data->pamp_on)
+		icodec->data->pamp_on(0);
+	msm_snddev_tx_mclk_free();
 
-	if (icodec->data->pamp_off)
-		icodec->data->pamp_off();
+	pr_aud_err("%s: encounter error\n", __func__);
 
-	pr_err("%s: encounter error\n", __func__);
-error_pamp:
-	pm_qos_update_request(&drv->tx_pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	wake_unlock(&drv->tx_idlelock);
 	return -ENODEV;
-}
-
-static int snddev_icodec_close_lb(struct snddev_icodec_state *icodec)
-{
-	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
-
-	
-	if (icodec->data->pamp_off)
-		icodec->data->pamp_off();
-
-	if (drv->snddev_vreg)
-		vreg_mode_vote(drv->snddev_vreg, 0, SNDDEV_LOW_POWER_MODE);
-
-	if (icodec->adie_path) {
-		adie_codec_proceed_stage(icodec->adie_path,
-			ADIE_CODEC_DIGITAL_OFF);
-		adie_codec_close(icodec->adie_path);
-		icodec->adie_path = NULL;
-	}
-
-	if (icodec->data->voltage_off)
-		icodec->data->voltage_off();
-
-	return 0;
 }
 
 static int snddev_icodec_close_rx(struct snddev_icodec_state *icodec)
 {
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
+	struct snddev_icodec_data *data = icodec->data;
 
-	pm_qos_update_request(&drv->rx_pm_qos_req,
-			      msm_cpuidle_get_deep_idle_latency());
+	wake_lock(&drv->rx_idlelock);
 
 	if (drv->snddev_vreg)
 		vreg_mode_vote(drv->snddev_vreg, 0, SNDDEV_HIGH_POWER_MODE);
 
-	
-	if (icodec->data->pamp_off)
-		icodec->data->pamp_off();
+	/* Disable power amplifier */
+	if (icodec->data->pamp_on)
+		icodec->data->pamp_on(0);
 
-	
-	if (icodec->adie_path) {
-		adie_codec_proceed_stage(icodec->adie_path,
-			ADIE_CODEC_DIGITAL_OFF);
-		adie_codec_close(icodec->adie_path);
-		icodec->adie_path = NULL;
+	if (support_aic3254) {
+		/* Restore default id for A3254 */
+		if (data->aic3254_id != data->default_aic3254_id)
+			data->aic3254_id = data->default_aic3254_id;
+		/* Disable External Codec A3254 */
+		if (aic3254_ops->aic3254_set_mode)
+			aic3254_ops->aic3254_set_mode(AIC3254_CONFIG_RX, DOWNLINK_OFF);
+	}
+	if (support_adie) {
+		/* Disable ADIE */
+		if (icodec->adie_path) {
+			adie_codec_proceed_stage(icodec->adie_path,
+				ADIE_CODEC_DIGITAL_OFF);
+			adie_codec_close(icodec->adie_path);
+			icodec->adie_path = NULL;
+		}
 	}
 
 	afe_close(icodec->data->copp_id);
 
-	if (icodec->data->voltage_off)
-		icodec->data->voltage_off();
+	if (icodec->data->voltage_on)
+		icodec->data->voltage_on(0);
 
-	clk_disable_unprepare(drv->rx_bitclk);
-	clk_disable_unprepare(drv->rx_osrclk);
+	clk_disable(drv->rx_bitclk);
+
+	if (support_aic3254_use_mclk)
+		snddev_icodec_rxclk_enable(icodec, 0);
+	else
+		clk_disable(drv->rx_osrclk);
 
 	msm_snddev_rx_mclk_free();
 
 	icodec->enabled = 0;
 
-	pm_qos_update_request(&drv->rx_pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	wake_unlock(&drv->rx_idlelock);
 	return 0;
 }
 
 static int snddev_icodec_close_tx(struct snddev_icodec_state *icodec)
 {
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
+	struct snddev_icodec_data *data = icodec->data;
 
-	pm_qos_update_request(&drv->tx_pm_qos_req,
-			      msm_cpuidle_get_deep_idle_latency());
+	wake_lock(&drv->tx_idlelock);
 
 	if (drv->snddev_vreg)
 		vreg_mode_vote(drv->snddev_vreg, 0, SNDDEV_HIGH_POWER_MODE);
 
-	
-	if (icodec->adie_path) {
-		adie_codec_proceed_stage(icodec->adie_path,
-					ADIE_CODEC_DIGITAL_OFF);
-		adie_codec_close(icodec->adie_path);
-		icodec->adie_path = NULL;
-	}
+	/* Reuse pamp_off for TX platform-specific setup  */
+	if (icodec->data->pamp_on)
+		icodec->data->pamp_on(0);
 
+	if (support_aic3254) {
+		/* Restore default id for A3254 */
+		if (data->aic3254_id != data->default_aic3254_id)
+			data->aic3254_id = data->default_aic3254_id;
+		/* Disable External Codec A3254 */
+		if (aic3254_ops->aic3254_set_mode)
+			aic3254_ops->aic3254_set_mode(AIC3254_CONFIG_TX, UPLINK_OFF);
+	}
+	if (support_adie) {
+		/* Disable ADIE */
+		if (icodec->adie_path) {
+			adie_codec_proceed_stage(icodec->adie_path,
+						ADIE_CODEC_DIGITAL_OFF);
+			adie_codec_close(icodec->adie_path);
+			icodec->adie_path = NULL;
+		}
+	}
 	afe_close(icodec->data->copp_id);
 
-	clk_disable_unprepare(drv->tx_bitclk);
-	clk_disable_unprepare(drv->tx_osrclk);
+	clk_disable(drv->tx_bitclk);
+	clk_disable(drv->tx_osrclk);
+
+	if (support_aic3254_use_mclk)
+		snddev_icodec_rxclk_enable(icodec, 0);
 
 	msm_snddev_tx_mclk_free();
 
-	
-	if (icodec->data->pamp_off)
-		icodec->data->pamp_off();
 
 	icodec->enabled = 0;
 
-	pm_qos_update_request(&drv->tx_pm_qos_req, PM_QOS_DEFAULT_VALUE);
+	wake_unlock(&drv->tx_idlelock);
 	return 0;
 }
 
@@ -636,23 +679,23 @@ static int snddev_icodec_set_device_volume_impl(
 		rc = adie_codec_set_device_digital_volume(icodec->adie_path,
 				icodec->data->channel_mode, volume);
 		if (rc < 0) {
-			pr_err("%s: unable to set_device_digital_volume for"
+			pr_aud_err("%s: unable to set_device_digital_volume for"
 				"%s volume in percentage = %u\n",
 				__func__, dev_info->name, volume);
 			return rc;
 		}
 
-	} else if (icodec->data->dev_vol_type & SNDDEV_DEV_VOL_ANALOG) {
+	} else if (icodec->data->dev_vol_type & SNDDEV_DEV_VOL_ANALOG)
 		rc = adie_codec_set_device_analog_volume(icodec->adie_path,
 				icodec->data->channel_mode, volume);
 		if (rc < 0) {
-			pr_err("%s: unable to set_device_analog_volume for"
+			pr_aud_err("%s: unable to set_device_analog_volume for"
 				"%s volume in percentage = %u\n",
 				__func__, dev_info->name, volume);
 			return rc;
 		}
-	} else {
-		pr_err("%s: Invalid device volume control\n", __func__);
+	else {
+		pr_aud_err("%s: Invalid device volume control\n", __func__);
 		return -EPERM;
 	}
 	return rc;
@@ -675,7 +718,7 @@ static int snddev_icodec_open(struct msm_snddev_info *dev_info)
 		mutex_lock(&drv->rx_lock);
 		if (drv->rx_active) {
 			mutex_unlock(&drv->rx_lock);
-			pr_err("%s: rx_active is set, return EBUSY\n",
+			pr_aud_err("%s: rx_active is set, return EBUSY\n",
 				__func__);
 			rc = -EBUSY;
 			goto error;
@@ -683,36 +726,24 @@ static int snddev_icodec_open(struct msm_snddev_info *dev_info)
 		rc = snddev_icodec_open_rx(icodec);
 
 		if (!IS_ERR_VALUE(rc)) {
-			if ((icodec->data->dev_vol_type & (
+			drv->rx_active = 1;
+			if (support_adie && (icodec->data->dev_vol_type & (
 				SNDDEV_DEV_VOL_DIGITAL |
 				SNDDEV_DEV_VOL_ANALOG)))
 				rc = snddev_icodec_set_device_volume_impl(
-						dev_info, dev_info->dev_volume);
+					dev_info, dev_info->dev_volume);
 			if (!IS_ERR_VALUE(rc))
 				drv->rx_active = 1;
 			else
-				pr_err("%s: set_device_volume_impl"
+				pr_aud_err("%s: set_device_volume_impl"
 					" error(rx) = %d\n", __func__, rc);
 		}
 		mutex_unlock(&drv->rx_lock);
-	} else if (icodec->data->capability & SNDDEV_CAP_LB) {
-		mutex_lock(&drv->lb_lock);
-		rc = snddev_icodec_open_lb(icodec);
-
-		if (!IS_ERR_VALUE(rc)) {
-			if ((icodec->data->dev_vol_type & (
-				SNDDEV_DEV_VOL_DIGITAL |
-				SNDDEV_DEV_VOL_ANALOG)))
-				rc = snddev_icodec_set_device_volume_impl(
-						dev_info, dev_info->dev_volume);
-		}
-
-		mutex_unlock(&drv->lb_lock);
 	} else {
 		mutex_lock(&drv->tx_lock);
 		if (drv->tx_active) {
 			mutex_unlock(&drv->tx_lock);
-			pr_err("%s: tx_active is set, return EBUSY\n",
+			pr_aud_err("%s: tx_active is set, return EBUSY\n",
 				__func__);
 			rc = -EBUSY;
 			goto error;
@@ -720,15 +751,16 @@ static int snddev_icodec_open(struct msm_snddev_info *dev_info)
 		rc = snddev_icodec_open_tx(icodec);
 
 		if (!IS_ERR_VALUE(rc)) {
-			if ((icodec->data->dev_vol_type & (
+			drv->tx_active = 1;
+			if (support_adie && (icodec->data->dev_vol_type & (
 				SNDDEV_DEV_VOL_DIGITAL |
 				SNDDEV_DEV_VOL_ANALOG)))
 				rc = snddev_icodec_set_device_volume_impl(
-						dev_info, dev_info->dev_volume);
+					dev_info, dev_info->dev_volume);
 			if (!IS_ERR_VALUE(rc))
 				drv->tx_active = 1;
 			else
-				pr_err("%s: set_device_volume_impl"
+				pr_aud_err("%s: set_device_volume_impl"
 					" error(tx) = %d\n", __func__, rc);
 		}
 		mutex_unlock(&drv->tx_lock);
@@ -753,7 +785,7 @@ static int snddev_icodec_close(struct msm_snddev_info *dev_info)
 		mutex_lock(&drv->rx_lock);
 		if (!drv->rx_active) {
 			mutex_unlock(&drv->rx_lock);
-			pr_err("%s: rx_active not set, return\n", __func__);
+			pr_aud_err("%s: rx_active not set, return\n", __func__);
 			rc = -EPERM;
 			goto error;
 		}
@@ -761,17 +793,13 @@ static int snddev_icodec_close(struct msm_snddev_info *dev_info)
 		if (!IS_ERR_VALUE(rc))
 			drv->rx_active = 0;
 		else
-			pr_err("%s: close rx failed, rc = %d\n", __func__, rc);
+			pr_aud_err("%s: close rx failed, rc = %d\n", __func__, rc);
 		mutex_unlock(&drv->rx_lock);
-	} else if (icodec->data->capability & SNDDEV_CAP_LB) {
-		mutex_lock(&drv->lb_lock);
-		rc = snddev_icodec_close_lb(icodec);
-		mutex_unlock(&drv->lb_lock);
 	} else {
 		mutex_lock(&drv->tx_lock);
 		if (!drv->tx_active) {
 			mutex_unlock(&drv->tx_lock);
-			pr_err("%s: tx_active not set, return\n", __func__);
+			pr_aud_err("%s: tx_active not set, return\n", __func__);
 			rc = -EPERM;
 			goto error;
 		}
@@ -779,7 +807,7 @@ static int snddev_icodec_close(struct msm_snddev_info *dev_info)
 		if (!IS_ERR_VALUE(rc))
 			drv->tx_active = 0;
 		else
-			pr_err("%s: close tx failed, rc = %d\n", __func__, rc);
+			pr_aud_err("%s: close tx failed, rc = %d\n", __func__, rc);
 		mutex_unlock(&drv->tx_lock);
 	}
 
@@ -799,7 +827,7 @@ static int snddev_icodec_check_freq(u32 req_freq)
 			(req_freq == 48000)) {
 				rc = 0;
 		} else
-			pr_info("%s: Unsupported Frequency:%d\n", __func__,
+			pr_aud_info("%s: Unsupported Frequency:%d\n", __func__,
 								req_freq);
 	}
 	return rc;
@@ -816,13 +844,14 @@ static int snddev_icodec_set_freq(struct msm_snddev_info *dev_info, u32 rate)
 	}
 
 	icodec = dev_info->private_data;
-	if (adie_codec_freq_supported(icodec->data->profile, rate) != 0) {
-		pr_err("%s: adie_codec_freq_supported() failed\n", __func__);
+	if (support_adie &&
+		adie_codec_freq_supported(icodec->data->profile, rate) != 0) {
+		pr_aud_err("%s: adie_codec_freq_supported() failed\n", __func__);
 		rc = -EINVAL;
 		goto error;
 	} else {
 		if (snddev_icodec_check_freq(rate) != 0) {
-			pr_err("%s: check_freq failed\n", __func__);
+			pr_aud_err("%s: check_freq failed\n", __func__);
 			rc = -EINVAL;
 			goto error;
 		} else
@@ -847,8 +876,12 @@ static int snddev_icodec_enable_sidetone(struct msm_snddev_info *dev_info,
 	struct snddev_icodec_state *icodec;
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
 
+	/*3254 sidetone will be binded with dsp image.*/
+	if (support_aic3254 || !support_adie)
+		goto error;
+
 	if (!dev_info) {
-		pr_err("invalid dev_info\n");
+		pr_aud_err("invalid dev_info\n");
 		rc = -EINVAL;
 		goto error;
 	}
@@ -858,18 +891,18 @@ static int snddev_icodec_enable_sidetone(struct msm_snddev_info *dev_info,
 	if (icodec->data->capability & SNDDEV_CAP_RX) {
 		mutex_lock(&drv->rx_lock);
 		if (!drv->rx_active || !dev_info->opened) {
-			pr_err("dev not active\n");
+			pr_aud_err("dev not active\n");
 			rc = -EPERM;
 			mutex_unlock(&drv->rx_lock);
 			goto error;
 		}
 		rc = afe_sidetone(PRIMARY_I2S_TX, PRIMARY_I2S_RX, enable, gain);
 		if (rc < 0)
-			pr_err("%s: AFE command sidetone failed\n", __func__);
+			pr_aud_err("%s: AFE command sidetone failed\n", __func__);
 		mutex_unlock(&drv->rx_lock);
 	} else {
 		rc = -EINVAL;
-		pr_err("rx device only\n");
+		pr_aud_err("rx device only\n");
 	}
 
 error:
@@ -885,10 +918,13 @@ static int snddev_icodec_enable_anc(struct msm_snddev_info *dev_info,
 	struct snddev_icodec_state *icodec;
 	struct snddev_icodec_drv_state *drv = &snddev_icodec_drv;
 
-	pr_info("%s: enable=%d\n", __func__, enable);
+	if (support_aic3254 || !support_adie)
+		goto error;
+
+	pr_aud_info("%s: enable=%d\n", __func__, enable);
 
 	if (!dev_info) {
-		pr_err("invalid dev_info\n");
+		pr_aud_err("invalid dev_info\n");
 		rc = -EINVAL;
 		goto error;
 	}
@@ -899,7 +935,7 @@ static int snddev_icodec_enable_anc(struct msm_snddev_info *dev_info,
 		mutex_lock(&drv->rx_lock);
 
 		if (!drv->rx_active || !dev_info->opened) {
-			pr_err("dev not active\n");
+			pr_aud_err("dev not active\n");
 			rc = -EPERM;
 			mutex_unlock(&drv->rx_lock);
 			goto error;
@@ -910,7 +946,7 @@ static int snddev_icodec_enable_anc(struct msm_snddev_info *dev_info,
 				cal_block.cal_kvaddr;
 
 			if (reg_writes == NULL) {
-				pr_err("error, no calibration data\n");
+				pr_aud_err("error, no calibration data\n");
 				rc = -1;
 				mutex_unlock(&drv->rx_lock);
 				goto error;
@@ -925,7 +961,7 @@ static int snddev_icodec_enable_anc(struct msm_snddev_info *dev_info,
 		mutex_unlock(&drv->rx_lock);
 	} else {
 		rc = -EINVAL;
-		pr_err("rx and ANC device only\n");
+		pr_aud_err("rx and ANC device only\n");
 	}
 
 error:
@@ -942,7 +978,7 @@ int snddev_icodec_set_device_volume(struct msm_snddev_info *dev_info,
 	int rc = -EPERM;
 
 	if (!dev_info) {
-		pr_info("%s : device not intilized.\n", __func__);
+		pr_aud_info("%s : device not intilized.\n", __func__);
 		return  -EINVAL;
 	}
 
@@ -951,7 +987,7 @@ int snddev_icodec_set_device_volume(struct msm_snddev_info *dev_info,
 	if (!(icodec->data->dev_vol_type & (SNDDEV_DEV_VOL_DIGITAL
 				| SNDDEV_DEV_VOL_ANALOG))) {
 
-		pr_info("%s : device %s does not support device volume "
+		pr_aud_info("%s : device %s does not support device volume "
 				"control.", __func__, dev_info->name);
 		return -EPERM;
 	}
@@ -959,8 +995,6 @@ int snddev_icodec_set_device_volume(struct msm_snddev_info *dev_info,
 
 	if (icodec->data->capability & SNDDEV_CAP_RX)
 		lock = &drv->rx_lock;
-	else if (icodec->data->capability & SNDDEV_CAP_LB)
-		lock = &drv->lb_lock;
 	else
 		lock = &drv->tx_lock;
 
@@ -972,12 +1006,10 @@ int snddev_icodec_set_device_volume(struct msm_snddev_info *dev_info,
 	return rc;
 }
 
-#ifdef CONFIG_MACH_PYRAMID
 void htc_8x60_register_icodec_ops(struct q6v2audio_icodec_ops *ops)
 {
 	audio_ops = ops;
 }
-#endif
 
 static int snddev_icodec_probe(struct platform_device *pdev)
 {
@@ -985,9 +1017,7 @@ static int snddev_icodec_probe(struct platform_device *pdev)
 	struct snddev_icodec_data *pdata;
 	struct msm_snddev_info *dev_info;
 	struct snddev_icodec_state *icodec;
-#ifdef CONFIG_MACH_PYRAMID
 	static int first_time = 1;
-#endif
 
 	if (!pdev || !pdev->dev.platform_data) {
 		printk(KERN_ALERT "Invalid caller\n");
@@ -997,7 +1027,7 @@ static int snddev_icodec_probe(struct platform_device *pdev)
 	pdata = pdev->dev.platform_data;
 	if ((pdata->capability & SNDDEV_CAP_RX) &&
 	   (pdata->capability & SNDDEV_CAP_TX)) {
-		pr_err("%s: invalid device data either RX or TX\n", __func__);
+		pr_aud_err("%s: invalid device data either RX or TX\n", __func__);
 		goto error;
 	}
 	icodec = kzalloc(sizeof(struct snddev_icodec_state), GFP_KERNEL);
@@ -1038,8 +1068,23 @@ static int snddev_icodec_probe(struct platform_device *pdev)
 	} else {
 		dev_info->dev_ops.enable_anc = NULL;
 	}
-#ifdef CONFIG_MACH_PYRAMID
 	if (first_time) {
+		if (audio_ops->support_aic3254)
+			support_aic3254 = audio_ops->support_aic3254();
+		else
+			support_aic3254 = 0;
+
+		pr_aud_info("%s: support_aic3254 = %d\n",
+			__func__, support_aic3254);
+
+		if (audio_ops->support_adie)
+			support_adie = audio_ops->support_adie();
+		else
+			support_adie = 0;
+
+		pr_aud_info("%s: support_adie = %d\n",
+			__func__, support_adie);
+
 		if (audio_ops->is_msm_i2s_slave)
 			msm_codec_i2s_slave_mode = audio_ops->is_msm_i2s_slave();
 		else
@@ -1047,9 +1092,18 @@ static int snddev_icodec_probe(struct platform_device *pdev)
 
 		pr_aud_info("%s: msm_codec_i2s_slave_mode = %d\n",
 			__func__, msm_codec_i2s_slave_mode);
+
+		if (audio_ops->support_aic3254_use_mclk)
+			support_aic3254_use_mclk = \
+					audio_ops->support_aic3254_use_mclk();
+		else
+			support_aic3254_use_mclk = 0;
+		pr_aud_info("%s: support_aic3254_use_mclk = %d\n",
+			__func__, support_aic3254_use_mclk);
+
 		first_time = 0;
 	}
-#endif
+
 error:
 	return rc;
 }
@@ -1065,7 +1119,12 @@ static struct platform_driver snddev_icodec_driver = {
   .driver = { .name = "snddev_icodec" }
 };
 
-#ifdef CONFIG_MACH_PYRAMID 
+
+void htc_8x60_register_aic3254_ops(struct q6v2audio_aic3254_ops *ops)
+{
+	aic3254_ops = ops;
+}
+
 int update_aic3254_info(struct aic3254_info *info)
 {
 	struct msm_snddev_info *dev_info;
@@ -1087,9 +1146,8 @@ int update_aic3254_info(struct aic3254_info *info)
 
 	return rc;
 }
-#endif 
 
-module_param(msm_codec_i2s_slave_mode, bool, 0);
+module_param(msm_codec_i2s_slave_mode, int, 0);
 MODULE_PARM_DESC(msm_codec_i2s_slave_mode, "Set MSM to I2S slave clock mode");
 
 static int __init snddev_icodec_init(void)
@@ -1099,39 +1157,33 @@ static int __init snddev_icodec_init(void)
 
 	rc = platform_driver_register(&snddev_icodec_driver);
 	if (IS_ERR_VALUE(rc)) {
-		pr_err("%s: platform_driver_register for snddev icodec failed\n",
+		pr_aud_err("%s: platform_driver_register for snddev icodec failed\n",
 					__func__);
 		goto error_snddev_icodec_driver;
 	}
 
 	rc = platform_driver_register(&msm_cdcclk_ctl_driver);
 	if (IS_ERR_VALUE(rc)) {
-		pr_err("%s: platform_driver_register for msm snddev failed\n",
+		pr_aud_err("%s: platform_driver_register for msm snddev failed\n",
 					__func__);
 		goto error_msm_cdcclk_ctl_driver;
 	}
 
-	rc = platform_driver_register(&msm_icodec_gpio_driver);
-	if (IS_ERR_VALUE(rc)) {
-		pr_err("%s: platform_driver_register for msm snddev gpio failed\n",
-					__func__);
-		goto error_msm_icodec_gpio_driver;
-	}
-
 	mutex_init(&icodec_drv->rx_lock);
-	mutex_init(&icodec_drv->lb_lock);
 	mutex_init(&icodec_drv->tx_lock);
+
+	mutex_init(&icodec_drv->rx_mclk_lock);
+
 	icodec_drv->rx_active = 0;
 	icodec_drv->tx_active = 0;
 	icodec_drv->snddev_vreg = vreg_init();
 
-	pm_qos_add_request(&icodec_drv->tx_pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
-				PM_QOS_DEFAULT_VALUE);
-	pm_qos_add_request(&icodec_drv->rx_pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
-				PM_QOS_DEFAULT_VALUE);
+	wake_lock_init(&icodec_drv->tx_idlelock, WAKE_LOCK_IDLE,
+			"snddev_tx_idle");
+	wake_lock_init(&icodec_drv->rx_idlelock, WAKE_LOCK_IDLE,
+			"snddev_rx_idle");
 	return 0;
-error_msm_icodec_gpio_driver:
-	platform_driver_unregister(&msm_cdcclk_ctl_driver);
+
 error_msm_cdcclk_ctl_driver:
 	platform_driver_unregister(&snddev_icodec_driver);
 error_snddev_icodec_driver:
@@ -1144,7 +1196,6 @@ static void __exit snddev_icodec_exit(void)
 
 	platform_driver_unregister(&snddev_icodec_driver);
 	platform_driver_unregister(&msm_cdcclk_ctl_driver);
-	platform_driver_unregister(&msm_icodec_gpio_driver);
 
 	clk_put(icodec_drv->rx_osrclk);
 	clk_put(icodec_drv->tx_osrclk);

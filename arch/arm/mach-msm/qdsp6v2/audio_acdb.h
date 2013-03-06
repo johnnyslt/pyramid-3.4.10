@@ -26,15 +26,38 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
-#ifndef __MACH_QDSP6_V2_SNDDEV_HDMI_H
-#define __MACH_QDSP6_V2_SNDDEV_HDMI_H
+#ifndef _AUDIO_ACDB_H
+#define _AUDIO_ACDB_H
 
-struct snddev_hdmi_data {
-	u32 capability;		/* RX or TX */
-	const char *name;
-	u32 copp_id;		/* audpp routing */
-	u32 acdb_id;		/* Audio Cal purpose */
-	u8 channel_mode;
-	u32 default_sample_rate;
+#include <linux/msm_audio_acdb.h>
+#include "q6adm.h"
+
+#define NUM_AUDPROC_BUFFERS	6
+
+struct acdb_cal_block {
+	uint32_t		cal_size;
+	uint32_t		cal_kvaddr;
+	uint32_t		cal_paddr;
 };
+
+struct acdb_cal_data {
+	uint32_t		num_cal_blocks;
+	struct acdb_cal_block	*cal_blocks;
+};
+
+struct audproc_buffer_data {
+	uint32_t	buf_size[NUM_AUDPROC_BUFFERS];
+	uint32_t	phys_addr[NUM_AUDPROC_BUFFERS];
+};
+
+void get_audproc_buffer_data(struct audproc_buffer_data *cal_buffers);
+void get_audproc_cal(int32_t path, struct acdb_cal_block *cal_block);
+void get_audstrm_cal(int32_t path, struct acdb_cal_block *cal_block);
+void get_audvol_cal(int32_t path, struct acdb_cal_block *cal_block);
+void get_vocproc_cal(struct acdb_cal_data *cal_data);
+void get_vocstrm_cal(struct acdb_cal_data *cal_data);
+void get_vocvol_cal(struct acdb_cal_data *cal_data);
+void get_sidetone_cal(struct sidetone_cal *cal_data);
+void get_anc_cal(struct acdb_cal_block *cal_block);
+
 #endif

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -9,6 +9,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  *
  */
 #include <linux/module.h>
@@ -22,19 +27,57 @@
 #include <linux/msm_audio_aac.h>
 #include <asm/atomic.h>
 #include <asm/ioctls.h>
+#include <mach/qdsp6v2/apr_audio.h>
+#include <mach/qdsp6v2/q6asm.h>
 #include "audio_utils.h"
 
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
 
+/* Buffer with meta*/
 #define PCM_BUF_SIZE		(4096 + sizeof(struct meta_in))
 
+/* Maximum 5 frames in buffer with meta */
 #define FRAME_SIZE		(1 + ((1536+sizeof(struct meta_out_dsp)) * 5))
 
 #define AAC_FORMAT_ADTS 65535
 
+void q6asm_aac_in_cb(uint32_t opcode, uint32_t token,
+		uint32_t *payload, void *priv)
+{
+	struct q6audio_in *audio = (struct q6audio_in *)priv;
+	unsigned long flags;
+
+	pr_debug("%s:session id %d: opcode[0x%x]\n", __func__,
+			audio->ac->session, opcode);
+
+	spin_lock_irqsave(&audio->dsp_lock, flags);
+	switch (opcode) {
+	case ASM_DATA_EVENT_READ_DONE:
+		audio_in_get_dsp_frames(audio, token, payload);
+		break;
+	case ASM_DATA_EVENT_WRITE_DONE:
+		atomic_inc(&audio->in_count);
+		wake_up(&audio->write_wait);
+		break;
+	case ASM_DATA_CMDRSP_EOS:
+		audio->eos_rsp = 1;
+		wake_up(&audio->read_wait);
+		break;
+	case ASM_STREAM_CMDRSP_GET_ENCDEC_PARAM:
+		break;
+	case ASM_STREAM_CMDRSP_GET_PP_PARAMS:
+		break;
+	case ASM_SESSION_EVENT_TX_OVERFLOW:
+		pr_aud_err("%s:session id %d: ASM_SESSION_EVENT_TX_OVERFLOW\n",
+			__func__, audio->ac->session);
+		break;
+	default:
+		pr_aud_err("%s:session id %d: Ignore opcode[0x%x]\n", __func__,
+			audio->ac->session, opcode);
+		break;
+	}
+	spin_unlock_irqrestore(&audio->dsp_lock, flags);
+}
+/* ------------------- device --------------------- */
 static long aac_in_ioctl(struct file *file,
 				unsigned int cmd, unsigned long arg)
 {
@@ -50,18 +93,18 @@ static long aac_in_ioctl(struct file *file,
 
 		enc_cfg = audio->enc_cfg;
 		aac_config = audio->codec_cfg;
-		
+		/* ENCODE CFG (after new set of API's are published )bharath*/
 		pr_debug("%s:session id %d: default buf alloc[%d]\n", __func__,
 				audio->ac->session, audio->buf_alloc);
 		if (audio->enabled == 1) {
-			pr_info("%s:AUDIO_START already over\n", __func__);
+			pr_aud_info("%s:AUDIO_START already over\n", __func__);
 			rc = 0;
 			break;
 		}
 
 		rc = audio_in_buf_alloc(audio);
 		if (rc < 0) {
-			pr_err("%s:session id %d: buffer allocation failed\n",
+			pr_aud_err("%s:session id %d: buffer allocation failed\n",
 				__func__, audio->ac->session);
 			break;
 		}
@@ -83,8 +126,8 @@ static long aac_in_ioctl(struct file *file,
 					aac_mode,
 					enc_cfg->stream_format);
 		if (rc < 0) {
-			pr_err("%s:session id %d: cmd media format block"
-				"failed\n", __func__, audio->ac->session);
+			pr_aud_err("%s:session id %d: cmd media format block\
+				failed\n", __func__, audio->ac->session);
 			break;
 		}
 		if (audio->feedback == NON_TUNNEL_MODE) {
@@ -92,8 +135,8 @@ static long aac_in_ioctl(struct file *file,
 						audio->pcm_cfg.sample_rate,
 						audio->pcm_cfg.channel_count);
 			if (rc < 0) {
-				pr_err("%s:session id %d: media format block"
-				"failed\n", __func__, audio->ac->session);
+				pr_aud_err("%s:session id %d: media format block\
+				failed\n", __func__, audio->ac->session);
 				break;
 			}
 		}
@@ -102,8 +145,8 @@ static long aac_in_ioctl(struct file *file,
 			audio->enabled = 1;
 		} else {
 			audio->enabled = 0;
-			pr_err("%s:session id %d: Audio Start procedure"
-			"failed rc=%d\n", __func__, audio->ac->session, rc);
+			pr_aud_err("%s:session id %d: Audio Start procedure\
+			failed rc=%d\n", __func__, audio->ac->session, rc);
 			break;
 		}
 		while (cnt++ < audio->str_cfg.buffer_count)
@@ -117,8 +160,8 @@ static long aac_in_ioctl(struct file *file,
 				audio->ac->session);
 		rc = audio_in_disable(audio);
 		if (rc  < 0) {
-			pr_err("%s:session id %d: Audio Stop procedure failed"
-				"rc=%d\n", __func__, audio->ac->session, rc);
+			pr_aud_err("%s:session id %d: Audio Stop procedure failed\
+				rc=%d\n", __func__, audio->ac->session, rc);
 			break;
 		}
 		break;
@@ -133,11 +176,11 @@ static long aac_in_ioctl(struct file *file,
 			cfg.channels = 2;
 		cfg.sample_rate = enc_cfg->sample_rate;
 		cfg.bit_rate = enc_cfg->bit_rate;
-		
+		/* ADTS(-1) to ADTS(0x00), RAW(0x00) to RAW(0x03) */
 		cfg.stream_format = ((enc_cfg->stream_format == \
 			0x00) ? AUDIO_AAC_FORMAT_ADTS : AUDIO_AAC_FORMAT_RAW);
-		pr_debug("%s:session id %d: Get-aac-cfg: format=%d sr=%d"
-			"bitrate=%d\n", __func__, audio->ac->session,
+		pr_debug("%s:session id %d: Get-aac-cfg: format=%d sr=%d\
+			bitrate=%d\n", __func__, audio->ac->session,
 			cfg.stream_format, cfg.sample_rate, cfg.bit_rate);
 		if (copy_to_user((void *)arg, &cfg, sizeof(cfg)))
 			rc = -EFAULT;
@@ -156,7 +199,7 @@ static long aac_in_ioctl(struct file *file,
 
 		if ((cfg.stream_format != AUDIO_AAC_FORMAT_RAW)  &&
 			(cfg.stream_format != AAC_FORMAT_ADTS)) {
-			pr_err("%s:session id %d: unsupported AAC format\n",
+			pr_aud_err("%s:session id %d: unsupported AAC format\n",
 				__func__, audio->ac->session);
 			rc = -EINVAL;
 			break;
@@ -171,14 +214,8 @@ static long aac_in_ioctl(struct file *file,
 			break;
 		}
 		if ((cfg.sample_rate < 8000) && (cfg.sample_rate > 48000)) {
-			pr_err("%s: ERROR in setting samplerate = %d\n",
+			pr_aud_err("%s: ERROR in setting samplerate = %d\n",
 				__func__, cfg.sample_rate);
-			rc = -EINVAL;
-			break;
-		}
-		if ((cfg.bit_rate < 4000) || (cfg.bit_rate > 192000)) {
-			pr_err("%s: ERROR in setting bitrate = %d\n",
-				__func__, cfg.bit_rate);
 			rc = -EINVAL;
 			break;
 		}
@@ -188,8 +225,8 @@ static long aac_in_ioctl(struct file *file,
 		enc_cfg->stream_format =
 			((cfg.stream_format == AUDIO_AAC_FORMAT_RAW) ? \
 								0x03 : 0x00);
-		pr_debug("%s:session id %d: Set-aac-cfg:SR= 0x%x ch=0x%x"
-			"bitrate=0x%x, format(adts/raw) = %d\n",
+		pr_debug("%s:session id %d: Set-aac-cfg:SR= 0x%x ch=0x%x\
+			bitrate=0x%x, format(adts/raw) = %d\n",
 			__func__, audio->ac->session, enc_cfg->sample_rate,
 			enc_cfg->channels, enc_cfg->bit_rate,
 			enc_cfg->stream_format);
@@ -224,7 +261,7 @@ static long aac_in_ioctl(struct file *file,
 		if ((audio_aac_cfg->sbr_on_flag == 1) ||
 			 (audio_aac_cfg->sbr_ps_on_flag == 1)) {
 			if (enc_cfg->sample_rate < 24000) {
-				pr_err("%s: ERROR in setting samplerate = %d"
+				pr_aud_err("%s: ERROR in setting samplerate = %d"
 					"\n", __func__, enc_cfg->sample_rate);
 				rc = -EINVAL;
 				break;
@@ -248,16 +285,16 @@ static int aac_in_open(struct inode *inode, struct file *file)
 	audio = kzalloc(sizeof(struct q6audio_in), GFP_KERNEL);
 
 	if (audio == NULL) {
-		pr_err("%s: Could not allocate memory for aac"
-				"driver\n", __func__);
+		pr_aud_err("%s:Could not allocate memory for aac\
+				driver\n", __func__);
 		return -ENOMEM;
 	}
-	
+	/* Allocate memory for encoder config param */
 	audio->enc_cfg = kzalloc(sizeof(struct msm_audio_aac_enc_config),
 				GFP_KERNEL);
 	if (audio->enc_cfg == NULL) {
-		pr_err("%s:session id %d: Could not allocate memory for aac"
-				"config param\n", __func__, audio->ac->session);
+		pr_aud_err("%s:session id %d: Could not allocate memory for aac\
+				config param\n", __func__, audio->ac->session);
 		kfree(audio);
 		return -ENOMEM;
 	}
@@ -266,8 +303,8 @@ static int aac_in_open(struct inode *inode, struct file *file)
 	audio->codec_cfg = kzalloc(sizeof(struct msm_audio_aac_config),
 				GFP_KERNEL);
 	if (audio->codec_cfg == NULL) {
-		pr_err("%s:session id %d: Could not allocate memory for aac"
-				"config\n", __func__, audio->ac->session);
+		pr_aud_err("%s:session id %d: Could not allocate memory for aac\
+				config\n", __func__, audio->ac->session);
 		kfree(audio->enc_cfg);
 		kfree(audio);
 		return -ENOMEM;
@@ -281,6 +318,9 @@ static int aac_in_open(struct inode *inode, struct file *file)
 	init_waitqueue_head(&audio->read_wait);
 	init_waitqueue_head(&audio->write_wait);
 
+	/* Settings will be re-config at AUDIO_SET_CONFIG,
+	* but at least we need to have initial config
+	*/
 	audio->str_cfg.buffer_size = FRAME_SIZE;
 	audio->str_cfg.buffer_count = FRAME_NUM;
 	audio->min_frame_size = 1536;
@@ -288,7 +328,7 @@ static int aac_in_open(struct inode *inode, struct file *file)
 	enc_cfg->sample_rate = 8000;
 	enc_cfg->channels = 1;
 	enc_cfg->bit_rate = 16000;
-	enc_cfg->stream_format = 0x00;
+	enc_cfg->stream_format = 0x00;/* 0:ADTS, 3:RAW */
 	audio->buf_cfg.meta_info_enable = 0x01;
 	audio->buf_cfg.frames_per_buf   = 0x01;
 	audio->pcm_cfg.buffer_count = PCM_BUF_COUNT;
@@ -299,18 +339,18 @@ static int aac_in_open(struct inode *inode, struct file *file)
 	aac_config->sbr_ps_on_flag = 0;
 	aac_config->channel_configuration = 1;
 
-	audio->ac = q6asm_audio_client_alloc((app_cb)q6asm_in_cb,
+	audio->ac = q6asm_audio_client_alloc((app_cb)q6asm_aac_in_cb,
 							(void *)audio);
 
 	if (!audio->ac) {
-		pr_err("%s: Could not allocate memory for"
-				"audio client\n", __func__);
+		pr_aud_err("%s: Could not allocate memory for\
+				audio client\n", __func__);
 		kfree(audio->enc_cfg);
 		kfree(audio->codec_cfg);
 		kfree(audio);
 		return -ENOMEM;
 	}
-	
+	/* open aac encoder in tunnel mode */
 	audio->buf_cfg.frames_per_buf = 0x01;
 
 	if ((file->f_mode & FMODE_WRITE) &&
@@ -320,13 +360,13 @@ static int aac_in_open(struct inode *inode, struct file *file)
 						FORMAT_LINEAR_PCM);
 
 		if (rc < 0) {
-			pr_err("%s:session id %d: NT Open failed rc=%d\n",
+			pr_aud_err("%s:session id %d: NT Open failed rc=%d\n",
 				__func__, audio->ac->session, rc);
 			rc = -ENODEV;
 			goto fail;
 		}
 		audio->buf_cfg.meta_info_enable = 0x01;
-		pr_info("%s:session id %d: NT mode encoder success\n", __func__,
+		pr_aud_info("%s:session id %d: NT mode encoder success\n", __func__,
 				audio->ac->session);
 	} else if (!(file->f_mode & FMODE_WRITE) &&
 				(file->f_mode & FMODE_READ)) {
@@ -334,25 +374,25 @@ static int aac_in_open(struct inode *inode, struct file *file)
 		rc = q6asm_open_read(audio->ac, FORMAT_MPEG4_AAC);
 
 		if (rc < 0) {
-			pr_err("%s:session id %d: Tunnel Open failed rc=%d\n",
+			pr_aud_err("%s:session id %d: Tunnel Open failed rc=%d\n",
 				__func__, audio->ac->session, rc);
 			rc = -ENODEV;
 			goto fail;
 		}
-		
+		/* register for tx overflow (valid for tunnel mode only) */
 		rc = q6asm_reg_tx_overflow(audio->ac, 0x01);
 		if (rc < 0) {
-			pr_err("%s:session id %d: TX Overflow registration"
-				"failed rc=%d\n", __func__,
+			pr_aud_err("%s:session id %d: TX Overflow registration\
+				failed rc=%d\n", __func__,
 				audio->ac->session, rc);
 			rc = -ENODEV;
 			goto fail;
 		}
 		audio->buf_cfg.meta_info_enable = 0x00;
-		pr_info("%s:session id %d: T mode encoder success\n", __func__,
+		pr_aud_info("%s:session id %d: T mode encoder success\n", __func__,
 			audio->ac->session);
 	} else {
-		pr_err("%s:session id %d: Unexpected mode\n", __func__,
+		pr_aud_err("%s:session id %d: Unexpected mode\n", __func__,
 				audio->ac->session);
 		rc = -EACCES;
 		goto fail;
@@ -363,7 +403,7 @@ static int aac_in_open(struct inode *inode, struct file *file)
 	audio->enc_ioctl = aac_in_ioctl;
 	file->private_data = audio;
 
-	pr_info("%s:session id %d: success\n", __func__, audio->ac->session);
+	pr_aud_info("%s:session id %d: success\n", __func__, audio->ac->session);
 	return 0;
 fail:
 	q6asm_audio_client_free(audio->ac);

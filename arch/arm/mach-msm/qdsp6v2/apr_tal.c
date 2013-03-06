@@ -8,6 +8,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  */
 
 #include <linux/kernel.h>
@@ -24,14 +29,9 @@
 #include <linux/debugfs.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
-#include <linux/clk.h>
 #include <mach/msm_smd.h>
-#include <mach/qdsp6v2/apr_tal.h>
-
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
+#include <linux/clk.h>
+#include "apr_tal.h"
 
 static char *svc_names[APR_DEST_MAX][APR_CLIENT_MAX] = {
 	{
@@ -63,7 +63,7 @@ int __apr_tal_write(struct apr_svc_ch_dev *apr_ch, void *data, int len)
 	pr_debug("apr_tal:w_len = %d\n", w_len);
 
 	if (w_len != len) {
-		pr_err("apr_tal: Error in write\n");
+		pr_aud_err("apr_tal: Error in write\n");
 		return -ENETRESET;
 	}
 	return w_len;
@@ -84,7 +84,7 @@ int apr_tal_write(struct apr_svc_ch_dev *apr_ch, void *data, int len)
 	} while (rc == -EAGAIN && retries++ < 300);
 
 	if (rc == -EAGAIN)
-		pr_err("apr_tal: TIMEOUT for write\n");
+		pr_aud_err("apr_tal: TIMEOUT for write\n");
 
 	return rc;
 }
@@ -104,7 +104,7 @@ static void apr_tal_notify(void *priv, unsigned event)
 check_pending:
 		len = smd_read_avail(apr_ch->ch);
 		if (len < 0) {
-			pr_err("apr_tal: Invalid Read Event :%d\n", len);
+			pr_aud_err("apr_tal: Invalid Read Event :%d\n", len);
 			spin_unlock_irqrestore(&apr_ch->lock, flags);
 			return;
 		}
@@ -123,7 +123,7 @@ check_pending:
 		}
 		r_len = smd_read_from_cb(apr_ch->ch, apr_ch->data, len);
 		if (len != r_len) {
-			pr_err("apr_tal: Invalid Read\n");
+			pr_aud_err("apr_tal: Invalid Read\n");
 			spin_unlock_irqrestore(&apr_ch->lock, flags);
 			return;
 		}
@@ -138,12 +138,12 @@ check_write_avail:
 		spin_unlock_irqrestore(&apr_ch->lock, flags);
 		break;
 	case SMD_EVENT_OPEN:
-		pr_info("apr_tal: SMD_EVENT_OPEN\n");
+		pr_aud_info("apr_tal: SMD_EVENT_OPEN\n");
 		apr_ch->smd_state = 1;
 		wake_up(&apr_ch->wait);
 		break;
 	case SMD_EVENT_CLOSE:
-		pr_info("apr_tal: SMD_EVENT_CLOSE\n");
+		pr_aud_info("apr_tal: SMD_EVENT_CLOSE\n");
 		break;
 	}
 }
@@ -155,12 +155,12 @@ struct apr_svc_ch_dev *apr_tal_open(uint32_t svc, uint32_t dest,
 
 	if ((svc >= APR_CLIENT_MAX) || (dest >= APR_DEST_MAX) ||
 						(dl >= APR_DL_MAX)) {
-		pr_err("apr_tal: Invalid params\n");
+		pr_aud_err("apr_tal: Invalid params\n");
 		return NULL;
 	}
 
 	if (apr_svc_ch[dl][dest][svc].ch) {
-		pr_err("apr_tal: This channel alreday openend\n");
+		pr_aud_err("apr_tal: This channel alreday openend\n");
 		return NULL;
 	}
 
@@ -170,9 +170,9 @@ struct apr_svc_ch_dev *apr_tal_open(uint32_t svc, uint32_t dest,
 			apr_svc_ch[dl][dest][svc].dest_state,
 				msecs_to_jiffies(APR_OPEN_TIMEOUT_MS));
 		if (rc == 0) {
-			pr_err("apr_tal:open timeout\n");
+			pr_aud_err("%s: TIMEOUT for dest %d svc %d\n", __func__, dest, svc);
 			mutex_unlock(&apr_svc_ch[dl][dest][svc].m_lock);
-			return NULL;
+			BUG();
 		}
 		pr_debug("apr_tal:Wakeup done\n");
 		apr_svc_ch[dl][dest][svc].dest_state = 0;
@@ -182,7 +182,7 @@ struct apr_svc_ch_dev *apr_tal_open(uint32_t svc, uint32_t dest,
 			&apr_svc_ch[dl][dest][svc],
 			apr_tal_notify);
 	if (rc < 0) {
-		pr_err("apr_tal: smd_open failed %s\n",
+		pr_aud_err("apr_tal: smd_open failed %s\n",
 					svc_names[dest][svc]);
 		mutex_unlock(&apr_svc_ch[dl][dest][svc].m_lock);
 		return NULL;
@@ -190,9 +190,10 @@ struct apr_svc_ch_dev *apr_tal_open(uint32_t svc, uint32_t dest,
 	rc = wait_event_timeout(apr_svc_ch[dl][dest][svc].wait,
 		(apr_svc_ch[dl][dest][svc].smd_state == 1), 5 * HZ);
 	if (rc == 0) {
-		pr_err("apr_tal:TIMEOUT for OPEN event\n");
+		pr_aud_err("apr_tal:TIMEOUT for OPEN event\n");
 		mutex_unlock(&apr_svc_ch[dl][dest][svc].m_lock);
 		apr_tal_close(&apr_svc_ch[dl][dest][svc]);
+		BUG();
 		return NULL;
 	}
 	if (!apr_svc_ch[dl][dest][svc].dest_state) {
@@ -232,20 +233,22 @@ static int apr_smd_probe(struct platform_device *pdev)
 	int clnt;
 
 	if (pdev->id == APR_DEST_MODEM) {
-		pr_info("apr_tal:Modem Is Up\n");
+		pr_aud_info("apr_tal:Modem Is Up\n");
 		dest = APR_DEST_MODEM;
 		clnt = APR_CLIENT_VOICE;
 		apr_svc_ch[APR_DL_SMD][dest][clnt].dest_state = 1;
 		wake_up(&apr_svc_ch[APR_DL_SMD][dest][clnt].dest);
 	} else if (pdev->id == APR_DEST_QDSP6) {
-		pr_info("apr_tal:Q6 Is Up\n");
+		pr_aud_info("apr_tal:Q6 Is Up\n");
+/*
+		local_src_disable(PLL_4);
+*/
 		dest = APR_DEST_QDSP6;
 		clnt = APR_CLIENT_AUDIO;
 		apr_svc_ch[APR_DL_SMD][dest][clnt].dest_state = 1;
 		wake_up(&apr_svc_ch[APR_DL_SMD][dest][clnt].dest);
 	} else
-		pr_err("apr_tal:Invalid Dest Id: %d\n", pdev->id);
-
+		pr_aud_err("apr_tal:Invalid Dest Id: %d\n", pdev->id);
 	return 0;
 }
 

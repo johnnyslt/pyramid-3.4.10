@@ -1,13 +1,28 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of Code Aurora nor
+ *       the names of its contributors may be used to endorse or promote
+ *       products derived from this software without specific prior written
+ *       permission.
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NON-INFRINGEMENT ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
 #ifndef AUDIO_LPA_H
@@ -21,10 +36,26 @@
 #define ADRV_STATUS_FSYNC 0x00000004
 #define ADRV_STATUS_PAUSE 0x00000008
 
+#define SOFT_PAUSE_PERIOD       30   /* ramp up/down for 30ms    */
+#define SOFT_PAUSE_STEP         2000 /* Step value 2ms or 2000us */
+enum {
+	SOFT_PAUSE_CURVE_LINEAR = 0,
+	SOFT_PAUSE_CURVE_EXP,
+	SOFT_PAUSE_CURVE_LOG,
+};
+
+#define SOFT_VOLUME_PERIOD       30   /* ramp up/down for 30ms    */
+#define SOFT_VOLUME_STEP         2000 /* Step value 2ms or 2000us */
+enum {
+	SOFT_VOLUME_CURVE_LINEAR = 0,
+	SOFT_VOLUME_CURVE_EXP,
+	SOFT_VOLUME_CURVE_LOG,
+};
+
 struct buffer {
 	void *data;
 	unsigned size;
-	unsigned used;		
+	unsigned used;		/* Input usage actual DSP produced PCM size  */
 	unsigned addr;
 };
 
@@ -43,8 +74,8 @@ struct codec_operations {
 struct audio {
 	spinlock_t dsp_lock;
 
-	uint8_t out_needed; 
-	struct list_head out_queue; 
+	uint8_t out_needed; /* number of buffers the dsp is waiting for */
+	struct list_head out_queue; /* queue to retain output buffers */
 
 	struct mutex lock;
 	struct mutex write_lock;
@@ -52,22 +83,24 @@ struct audio {
 
 	struct audio_client *ac;
 
-	
+	/* configuration to use on next enable */
 	uint32_t out_sample_rate;
 	uint32_t out_channel_mode;
-	uint32_t out_bits; 
+	uint32_t out_bits; /* bits per sample (used by PCM decoder) */
 
-	int32_t phys; 
+	/* data allocated for various buffers */
+	char *data;
+	int32_t phys; /* physical address of write buffer */
 
 	uint32_t drv_status;
-	int wflush; 
+	int wflush; /* Write flush */
 	int opened;
 	int out_enabled;
 	int out_prefill;
 	int running;
-	int stopped; 
+	int stopped; /* set when stopped, cleared on flush */
 	int buf_refresh;
-	int teos; 
+	int teos; /* valid only if tunnel mode & no data left for decoder */
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	struct audlpa_suspend_ctl suspend_ctl;
@@ -88,8 +121,7 @@ struct audio {
 
 	uint32_t device_events;
 
-	struct list_head ion_region_queue; 
-	struct ion_client *client;
+	struct list_head pmem_region_queue; /* protected by lock */
 
 	int eq_enable;
 	int eq_needs_commit;
@@ -100,6 +132,8 @@ struct audio {
 	uint32_t buffer_size;
 	uint32_t buffer_count;
 	uint32_t bytes_consumed;
+
+	uint32_t routing_id;
 };
 
-#endif 
+#endif /* !AUDIO_LPA_H */

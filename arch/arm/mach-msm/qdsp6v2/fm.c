@@ -36,19 +36,12 @@
 #include <asm/ioctls.h>
 #include <mach/msm_adsp.h>
 #include <mach/qdsp6v2/audio_dev_ctl.h>
-#include <sound/q6afe.h>
+#include <mach/qdsp6v2/q6afe.h>
 
 #define SESSION_ID_FM  (MAX_SESSIONS + 1)
 #define FM_ENABLE	0x1
 #define FM_DISABLE	0x0
 #define FM_COPP		0x7
-
-#ifdef CONFIG_MACH_PYRAMID
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
-#endif
 
 struct audio {
 	struct mutex lock;
@@ -66,22 +59,21 @@ struct audio {
 	uint16_t volume;
 };
 
-
 static struct audio fm_audio;
 static int fm_audio_enable(struct audio *audio)
 {
 	if (audio->enabled)
 		return 0;
 
-	pr_info("%s: fm dest= %08x fm_source = %08x\n", __func__,
-		audio->fm_dst_copp_id, audio->fm_src_copp_id);
+	pr_aud_info("%s: fm dest= %08x fm_source = %08x\n", __func__,
+			audio->fm_dst_copp_id, audio->fm_src_copp_id);
 
-	
+	/* do afe loopback here */
 
 	if (audio->fm_dest && audio->fm_source) {
 		if (afe_loopback(FM_ENABLE, audio->fm_dst_copp_id,
 					audio->fm_src_copp_id) < 0) {
-			pr_err("%s: afe_loopback failed\n", __func__);
+			pr_aud_err("%s: afe_loopback failed\n", __func__);
 		}
 
 		audio->running = 1;
@@ -97,7 +89,7 @@ static void fm_audio_listner(u32 evt_id, union auddev_evt_data *evt_payload,
 	struct audio *audio = (struct audio *) private_data;
 	switch (evt_id) {
 	case AUDDEV_EVT_DEV_RDY:
-		pr_info("%s :AUDDEV_EVT_DEV_RDY\n", __func__);
+		pr_aud_info("%s :AUDDEV_EVT_DEV_RDY\n", __func__);
 		if (evt_payload->routing_id == FM_COPP) {
 			audio->fm_source = 1;
 			audio->fm_src_copp_id = FM_COPP;
@@ -108,28 +100,26 @@ static void fm_audio_listner(u32 evt_id, union auddev_evt_data *evt_payload,
 
 		if (audio->enabled &&
 			audio->fm_dest &&
-			audio->fm_source) {
+			audio->fm_source && !audio->running) {
 
-			afe_loopback_gain(audio->fm_src_copp_id,
-						audio->volume);
 			afe_loopback(FM_ENABLE, audio->fm_dst_copp_id,
 						audio->fm_src_copp_id);
 			audio->running = 1;
 		}
 		break;
 	case AUDDEV_EVT_DEV_RLS:
-		pr_info("%s: AUDDEV_EVT_DEV_RLS\n", __func__);
+		pr_aud_info("%s: AUDDEV_EVT_DEV_RLS\n", __func__);
 		if (evt_payload->routing_id == audio->fm_src_copp_id)
 			audio->fm_source = 0;
 		else
 			audio->fm_dest = 0;
 		if (audio->running
-			&& (!audio->fm_dest || !audio->fm_source)) {
+			&& (!audio->fm_dest && !audio->fm_source)) {
 			afe_loopback(FM_DISABLE, audio->fm_dst_copp_id,
 						audio->fm_src_copp_id);
 			audio->running = 0;
 		} else {
-			pr_err("%s: device switch happened\n", __func__);
+			pr_aud_err("%s: device switch happened\n", __func__);
 		}
 		break;
 	case AUDDEV_EVT_STREAM_VOL_CHG:
@@ -142,7 +132,7 @@ static void fm_audio_listner(u32 evt_id, union auddev_evt_data *evt_payload,
 		break;
 
 	default:
-		pr_err("%s: ERROR:wrong event %08x\n", __func__, evt_id);
+		pr_aud_err("%s: ERROR:wrong event %08x\n", __func__, evt_id);
 		break;
 	}
 }
@@ -150,7 +140,7 @@ static void fm_audio_listner(u32 evt_id, union auddev_evt_data *evt_payload,
 static int fm_audio_disable(struct audio *audio)
 {
 
-	
+	/* break the AFE loopback here */
 	afe_loopback(FM_DISABLE, audio->fm_dst_copp_id, audio->fm_src_copp_id);
 	return 0;
 }
@@ -165,11 +155,11 @@ static long fm_audio_ioctl(struct file *file, unsigned int cmd,
 	mutex_lock(&audio->lock);
 	switch (cmd) {
 	case AUDIO_START:
-		pr_info("%s: AUDIO_START\n", __func__);
+		pr_aud_info("%s: AUDIO_START\n", __func__);
 		rc = fm_audio_enable(audio);
 		break;
 	case AUDIO_STOP:
-		pr_info("%s: AUDIO_STOP\n", __func__);
+		pr_aud_info("%s: AUDIO_STOP\n", __func__);
 		rc = fm_audio_disable(audio);
 		audio->running = 0;
 		audio->enabled = 0;
@@ -183,7 +173,7 @@ static long fm_audio_ioctl(struct file *file, unsigned int cmd,
 		break;
 	default:
 		rc = -EINVAL;
-		pr_err("%s: Un supported IOCTL\n", __func__);
+		pr_aud_err("%s: Un supported IOCTL\n", __func__);
 	}
 	mutex_unlock(&audio->lock);
 	return rc;
@@ -213,7 +203,7 @@ static int fm_audio_open(struct inode *inode, struct file *file)
 	if (audio->opened)
 		return -EPERM;
 
-	
+	/* Allocate the decoder */
 	audio->dec_id = SESSION_ID_FM;
 
 	audio->running = 0;
@@ -231,7 +221,7 @@ static int fm_audio_open(struct inode *inode, struct file *file)
 					(void *)audio);
 
 	if (rc) {
-		pr_err("%s: failed to register listnet\n", __func__);
+		pr_aud_err("%s: failed to register listnet\n", __func__);
 		goto event_err;
 	}
 

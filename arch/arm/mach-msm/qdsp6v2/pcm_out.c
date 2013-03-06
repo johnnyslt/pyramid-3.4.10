@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2009 Google, Inc.
- * Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+ * Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  * Author: Brian Swetland <swetland@google.com>
  *
  * This software is licensed under the terms of the GNU General Public
@@ -23,12 +23,15 @@
 #include <linux/wait.h>
 #include <linux/msm_audio.h>
 #include <linux/slab.h>
-#include <linux/wakelock.h>
 #include <asm/atomic.h>
-#include <sound/q6asm.h>
-#include <sound/apr_audio.h>
 #include <mach/debug_mm.h>
+#include <mach/qdsp6v2/apr_audio.h>
+#include <mach/qdsp6v2/q6asm.h>
 #include <mach/qdsp6v2/audio_dev_ctl.h>
+#include <linux/wakelock.h>
+#include <linux/rtc.h>
+
+#include "q6adm.h"
 
 #define MAX_BUF 2
 #define BUFSZ (4800)
@@ -42,13 +45,6 @@ struct q6_copp_effect {
 	uint32_t payload_size;
 	void *payload;
 };
-
-#ifdef CONFIG_MACH_PYRAMID
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
-#endif
 
 struct pcm {
 	struct mutex lock;
@@ -69,6 +65,8 @@ struct pcm {
 	atomic_t out_stopped;
 	atomic_t out_prefill;
 	struct wake_lock wakelock;
+
+	uint32_t routing_id;
 };
 
 void pcm_out_cb(uint32_t opcode, uint32_t token,
@@ -82,9 +80,6 @@ void pcm_out_cb(uint32_t opcode, uint32_t token,
 	case ASM_DATA_EVENT_WRITE_DONE:
 		atomic_inc(&pcm->out_count);
 		wake_up(&pcm->write_wait);
-		break;
-	case RESET_EVENTS:
-		reset_device();
 		break;
 	default:
 		break;
@@ -134,7 +129,7 @@ static int config(struct pcm *pcm)
 		rc = q6asm_audio_client_buf_alloc(IN, pcm->ac,
 				pcm->buffer_size, pcm->buffer_count);
 		if (rc < 0) {
-			pr_err("Audio Start: Buffer Allocation failed \
+			pr_aud_err("Audio Start: Buffer Allocation failed \
 							rc = %d\n", rc);
 			goto fail;
 		}
@@ -142,7 +137,7 @@ static int config(struct pcm *pcm)
 		rc = q6asm_media_format_block_pcm(pcm->ac, pcm->sample_rate,
 							pcm->channel_count);
 		if (rc < 0)
-			pr_err("%s: CMD Format block failed\n", __func__);
+			pr_aud_err("%s: CMD Format block failed\n", __func__);
 
 		atomic_set(&pcm->out_prefill, 1);
 		atomic_set(&pcm->out_count, pcm->buffer_count);
@@ -167,13 +162,18 @@ static void pcm_event_listner(u32 evt_id, union auddev_evt_data *evt_payload,
 			if (pcm->ac) {
 				rc = q6asm_set_volume(pcm->ac, pcm->volume);
 				if (rc < 0)
-					pr_err("%s: Send Volume command"
+					pr_aud_err("%s: Send Volume command"
 					"failed rc=%d\n", __func__, rc);
 			}
 		}
 		break;
+	case AUDDEV_EVT_DEV_RDY:
+		pcm->routing_id = evt_payload->routing_id;
+		pr_aud_info("%s: AUDDEV_EVT_DEV_RDY, id = %d\n",
+			__func__, pcm->routing_id);
+		break;
 	default:
-		pr_err("%s:ERROR:wrong event\n", __func__);
+		pr_aud_err("%s:ERROR:wrong event\n", __func__);
 		break;
 	}
 }
@@ -195,25 +195,25 @@ static long pcm_out_ioctl(struct file *file, unsigned int cmd,
 	mutex_lock(&pcm->lock);
 	switch (cmd) {
 	case AUDIO_SET_VOLUME: {
-		int vol;
-		if (copy_from_user(&vol, (void *) arg, sizeof(vol))) {
-			rc = -EFAULT;
-			break;
-		}
+		pr_aud_info("%s: AUDIO_SET_VOLUME, vol %lu\n", __func__, arg);
+		rc = q6asm_set_volume(pcm->ac, arg);
+		if (rc < 0)
+			pr_aud_err("%s: Send Volume command failed rc=%d\n",
+				__func__, rc);
 		break;
 	}
 	case AUDIO_START: {
-		pr_info("%s: AUDIO_START\n", __func__);
+		pr_aud_info("%s: AUDIO_START\n", __func__);
 		rc = config(pcm);
 		if (rc) {
-			pr_err("%s: Out Configuration failed\n", __func__);
+			pr_aud_err("%s: Out Configuration failed\n", __func__);
 			rc = -EFAULT;
 			break;
 		}
 
 		rc = pcm_out_enable(pcm);
 		if (rc) {
-			pr_err("Out enable failed\n");
+			pr_aud_err("Out enable failed\n");
 			rc = -EFAULT;
 			break;
 		}
@@ -222,16 +222,16 @@ static long pcm_out_ioctl(struct file *file, unsigned int cmd,
 
 		rc = q6asm_set_volume(pcm->ac, pcm->volume);
 		if (rc < 0)
-			pr_err("%s: Send Volume command failed rc=%d\n",
+			pr_aud_err("%s: Send Volume command failed rc=%d\n",
 							__func__, rc);
 		rc = q6asm_set_lrgain(pcm->ac, 0x2000, 0x2000);
 		if (rc < 0)
-			pr_err("%s: Send channel gain failed rc=%d\n",
+			pr_aud_err("%s: Send channel gain failed rc=%d\n",
 							__func__, rc);
-		
+		/* disable mute by default */
 		rc = q6asm_set_mute(pcm->ac, 0);
 		if (rc < 0)
-			pr_err("%s: Send mute command failed rc=%d\n",
+			pr_aud_err("%s: Send mute command failed rc=%d\n",
 							__func__, rc);
 		break;
 	}
@@ -247,7 +247,7 @@ static long pcm_out_ioctl(struct file *file, unsigned int cmd,
 		break;
 	case AUDIO_SET_CONFIG: {
 		struct msm_audio_config config;
-		pr_debug("%s: AUDIO_SET_CONFIG\n", __func__);
+		pr_aud_info("AUDIO_SET_CONFIG\n");
 		if (copy_from_user(&config, (void *) arg, sizeof(config))) {
 			rc = -EFAULT;
 			break;
@@ -276,7 +276,7 @@ static long pcm_out_ioctl(struct file *file, unsigned int cmd,
 	}
 	case AUDIO_GET_CONFIG: {
 		struct msm_audio_config config;
-		pr_debug("%s: AUDIO_GET_CONFIG\n", __func__);
+		pr_aud_info("AUDIO_GET_CONFIG\n");
 		config.buffer_size = pcm->buffer_size;
 		config.buffer_count = pcm->buffer_count;
 		config.sample_rate = pcm->sample_rate;
@@ -297,12 +297,12 @@ static long pcm_out_ioctl(struct file *file, unsigned int cmd,
 		}
 		rc = q6asm_equalizer(pcm->ac, (void *) &eq_config);
 		if (rc < 0)
-			pr_err("%s: EQUALIZER FAILED\n", __func__);
+			pr_aud_err("%s: EQUALIZER FAILED\n", __func__);
 		break;
 	}
 	case AUDIO_SET_Q6_EFFECT: {
 		struct param {
-			uint32_t effect_type; 
+			uint32_t effect_type; /* 0 for POPP, 1 for COPP */
 			uint32_t module_id;
 			uint32_t param_id;
 			uint32_t payload_size;
@@ -343,11 +343,25 @@ static long pcm_out_ioctl(struct file *file, unsigned int cmd,
 			rc = -EFAULT;
 			break;
 		}
-		if (q6_param.effect_type == 0) { 
+		if (q6_param.effect_type == 0) { /* POPP */
 			rc = q6asm_enable_effect(pcm->ac, q6_param.module_id,
 						q6_param.param_id,
 						q6_param.payload_size,
 						payload);
+		} else { /* COPP */
+			if (pcm->routing_id != -1) {
+				rc = q6adm_enable_effect(pcm->routing_id,
+						     q6_param.module_id,
+						     q6_param.param_id,
+						     q6_param.payload_size,
+						     payload);
+			} else {
+				pr_aud_err("%s: audio routing not ready\n",
+					__func__);
+				kfree(payload);
+				rc = -EINVAL;
+				break;
+			}
 		}
 #if Q6_EFFECT_DEBUG
 		{
@@ -373,48 +387,51 @@ static int pcm_out_open(struct inode *inode, struct file *file)
 {
 	struct pcm *pcm;
 	int rc = 0;
-	char name[24];
 
-	pr_info("[%s:%s] open\n", __MM_FILE__, __func__);
+	struct timespec ts;
+	struct rtc_time tm;
+
+	pr_aud_info("[%s:%s] open\n", __MM_FILE__, __func__);
 	pcm = kzalloc(sizeof(struct pcm), GFP_KERNEL);
 	if (!pcm) {
-		pr_err("%s: Failed to allocated memory\n", __func__);
+		pr_aud_info("%s: Failed to allocated memory\n", __func__);
 		return -ENOMEM;
-	}
-
-	pcm->channel_count = 2;
-	pcm->sample_rate = 44100;
-	pcm->buffer_size = BUFSZ;
-	pcm->buffer_count = MAX_BUF;
-	pcm->stream_event = AUDDEV_EVT_STREAM_VOL_CHG;
-	pcm->volume = 0x2000;
-
-	pcm->ac = q6asm_audio_client_alloc((app_cb)pcm_out_cb, (void *)pcm);
-	if (!pcm->ac) {
-		pr_err("%s: Could not allocate memory\n", __func__);
-		rc = -ENOMEM;
-		goto fail;
-	}
-
-	rc = q6asm_open_write(pcm->ac, FORMAT_LINEAR_PCM);
-	if (rc < 0) {
-		pr_err("%s: pcm out open failed for session %d\n", __func__,
-			pcm->ac->session);
-		rc = -EINVAL;
-		goto fail;
 	}
 
 	mutex_init(&pcm->lock);
 	mutex_init(&pcm->write_lock);
 	init_waitqueue_head(&pcm->write_wait);
 	spin_lock_init(&pcm->dsp_lock);
+	wake_lock_init(&pcm->wakelock, WAKE_LOCK_SUSPEND, "audio_pcm");
+
+	pcm->channel_count = 2;
+	pcm->sample_rate = 44100;
+	pcm->buffer_size = BUFSZ;
+	pcm->buffer_count = MAX_BUF;
+	pcm->stream_event = AUDDEV_EVT_STREAM_VOL_CHG |
+			    AUDDEV_EVT_DEV_RDY;
+	pcm->volume = 0x2000;
+
+	pcm->ac = q6asm_audio_client_alloc((app_cb)pcm_out_cb, (void *)pcm);
+	if (!pcm->ac) {
+		pr_aud_err("%s: Could not allocate memory\n", __func__);
+		rc = -ENOMEM;
+		goto fail;
+	}
+
+	rc = q6asm_open_write(pcm->ac, FORMAT_LINEAR_PCM);
+	if (rc < 0) {
+		pr_aud_err("%s: pcm out open failed for session %d\n", __func__,
+			pcm->ac->session);
+		rc = -EINVAL;
+		goto fail;
+	}
+
 	atomic_set(&pcm->out_enabled, 0);
 	atomic_set(&pcm->out_stopped, 0);
 	atomic_set(&pcm->out_count, pcm->buffer_count);
 	atomic_set(&pcm->out_prefill, 0);
 	atomic_set(&pcm->out_opened, 1);
-	snprintf(name, sizeof name, "audio_pcm_%x", pcm->ac->session);
-	wake_lock_init(&pcm->wakelock, WAKE_LOCK_SUSPEND, name);
 
 	rc = auddev_register_evt_listner(pcm->stream_event,
 					AUDDEV_CLNT_DEC,
@@ -422,17 +439,29 @@ static int pcm_out_open(struct inode *inode, struct file *file)
 					pcm_event_listner,
 					(void *)pcm);
 	if (rc < 0) {
-		pr_err("%s: failed to register listner\n", __func__);
+		pr_aud_err("%s: failed to register listner\n", __func__);
 		goto fail;
 	}
 
 	file->private_data = pcm;
-	pr_info("[%s:%s] open session id[%d]\n", __MM_FILE__,
+	pcm->routing_id = -1;
+
+	getnstimeofday(&ts);
+	rtc_time_to_tm(ts.tv_sec, &tm);
+	pr_aud_info1("[ATS][play_music][successful] at %lld \
+		(%d-%02d-%02d %02d:%02d:%02d.%09lu UTC)\n",
+		ktime_to_ns(ktime_get()),
+		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
+	pr_debug("[%s:%s] open session id[%d]\n", __MM_FILE__,
 				__func__, pcm->ac->session);
 	return 0;
 fail:
 	if (pcm->ac)
 		q6asm_audio_client_free(pcm->ac);
+	wake_lock_destroy(&pcm->wakelock);
+	mutex_destroy(&pcm->lock);
+	mutex_destroy(&pcm->write_lock);
 	kfree(pcm);
 	return rc;
 }
@@ -462,16 +491,16 @@ static ssize_t pcm_out_write(struct file *file, const char __user *buf,
 	while (count > 0) {
 		rc = wait_event_timeout(pcm->write_wait,
 				(atomic_read(&pcm->out_count) ||
-				atomic_read(&pcm->out_stopped)), 1 * HZ);
+				atomic_read(&pcm->out_stopped)), 5 * HZ);
 		if (!rc) {
-			pr_err("%s: wait_event_timeout failed for session %d\n",
+			pr_aud_err("%s: wait_event_timeout failed for session %d\n",
 				__func__, pcm->ac->session);
 			goto fail;
 		}
 
 		if (atomic_read(&pcm->out_stopped) &&
 					!atomic_read(&pcm->out_count)) {
-			pr_info("%s: pcm stopped out_count 0\n", __func__);
+			pr_aud_info("%s: pcm stopped out_count 0\n", __func__);
 			mutex_unlock(&pcm->write_lock);
 			return 0;
 		}
@@ -508,19 +537,36 @@ fail:
 static int pcm_out_release(struct inode *inode, struct file *file)
 {
 	struct pcm *pcm = file->private_data;
+	struct timespec ts;
+	struct rtc_time tm;
 
-	pr_info("[%s:%s] release session id[%d]\n", __MM_FILE__,
+	if (pcm == NULL) {
+		pr_aud_err("%s: Nothing need to be released.\n", __func__);
+		return 0;
+	}
+	if (pcm->ac) {
+		pr_aud_info("[%s:%s] release session id[%d]\n", __MM_FILE__,
 				__func__, pcm->ac->session);
-	if (pcm->ac)
 		pcm_out_disable(pcm);
-	msm_clear_session_id(pcm->ac->session);
+		msm_clear_session_id(pcm->ac->session);
 	auddev_unregister_evt_listner(AUDDEV_CLNT_DEC, pcm->ac->session);
-	q6asm_audio_client_free(pcm->ac);
+		q6asm_audio_client_free(pcm->ac);
+	}
 	audio_allow_sleep(pcm);
 	wake_lock_destroy(&pcm->wakelock);
 	mutex_destroy(&pcm->lock);
 	mutex_destroy(&pcm->write_lock);
+
 	kfree(pcm);
+	pr_aud_info("[%s:%s] release\n", __MM_FILE__, __func__);
+
+	getnstimeofday(&ts);
+	rtc_time_to_tm(ts.tv_sec, &tm);
+	pr_aud_info1("[ATS][stop_music][successful] at %lld \
+		(%d-%02d-%02d %02d:%02d:%02d.%09lu UTC)\n",
+		ktime_to_ns(ktime_get()),
+		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec, ts.tv_nsec);
 	return 0;
 }
 

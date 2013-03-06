@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,6 +8,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  */
 
 #include <linux/kernel.h>
@@ -27,19 +32,13 @@
 #include <linux/sysfs.h>
 #include <linux/device.h>
 #include <linux/slab.h>
-#include <asm/mach-types.h>
 #include <mach/peripheral-loader.h>
 #include <mach/msm_smd.h>
 #include <mach/qdsp6v2/apr.h>
-#include <mach/qdsp6v2/apr_tal.h>
-#include <mach/qdsp6v2/dsp_debug.h>
 #include <mach/subsystem_notif.h>
 #include <mach/subsystem_restart.h>
-
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
+#include "apr_tal.h"
+#include "dsp_debug.h"
 
 struct apr_q6 q6;
 struct apr_client client[APR_DEST_MAX][APR_CLIENT_MAX];
@@ -48,6 +47,7 @@ static atomic_t modem_state;
 
 static wait_queue_head_t  dsp_wait;
 static wait_queue_head_t  modem_wait;
+/* Subsystem restart: QDSP6 data, functions */
 static struct workqueue_struct *apr_reset_workqueue;
 static void apr_reset_deregister(struct work_struct *work);
 struct apr_reset_work {
@@ -55,19 +55,6 @@ struct apr_reset_work {
 	struct work_struct work;
 };
 
-#define APR_Q6_CHECK_TIMEOUT 5000
-static struct delayed_work apr_q6_check_work;
-static void apr_q6_check_worker(struct work_struct *work);
-
-static void apr_q6_check_worker(struct work_struct *work)
-{
-	pr_info("%s: %d\n", __func__, q6.state);
-
-	
-	if (q6.state != APR_Q6_LOADED) {
-		BUG();
-	}
-}
 
 int apr_send_pkt(void *handle, uint32_t *buf)
 {
@@ -80,21 +67,21 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 	unsigned long flags;
 
 	if (!handle || !buf) {
-		pr_err("APR: Wrong parameters\n");
+		pr_aud_err("APR: Wrong parameters\n");
 		return -EINVAL;
 	}
 	if (svc->need_reset) {
-		pr_err("apr: send_pkt service need reset\n");
+		pr_aud_err("apr: send_pkt service need reset\n");
 		return -ENETRESET;
 	}
 
 	if ((svc->dest_id == APR_DEST_QDSP6) &&
 					(atomic_read(&dsp_state) == 0)) {
-		pr_err("apr: Still dsp is not Up\n");
+		pr_aud_err("apr: Still dsp is not Up\n");
 		return -ENETRESET;
 	} else if ((svc->dest_id == APR_DEST_MODEM) &&
 					(atomic_read(&modem_state) == 0)) {
-		pr_err("apr: Still Modem is not Up\n");
+		pr_aud_err("apr: Still Modem is not Up\n");
 		return -ENETRESET;
 	}
 
@@ -105,7 +92,7 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 	clnt = &client[dest_id][client_id];
 
 	if (!client[dest_id][client_id].handle) {
-		pr_err("APR: Still service is not yet opened\n");
+		pr_aud_err("APR: Still service is not yet opened\n");
 		spin_unlock_irqrestore(&svc->w_lock, flags);
 		return -EINVAL;
 	}
@@ -122,7 +109,7 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 
 	w_len = apr_tal_write(clnt->handle, buf, hdr->pkt_size);
 	if (w_len != hdr->pkt_size)
-		pr_err("Unable to write APR pkt successfully: %d\n", w_len);
+		pr_aud_err("Unable to write APR pkt successfully: %d\n", w_len);
 	spin_unlock_irqrestore(&svc->w_lock, flags);
 
 	return w_len;
@@ -153,7 +140,7 @@ static void apr_cb_func(void *buf, int len, void *priv)
 	pr_debug("\n*****************\n");
 
 	if (!buf || len <= APR_HDR_SIZE) {
-		pr_err("APR: Improper apr pkt received:%p %d\n",
+		pr_aud_err("APR: Improper apr pkt received:%p %d\n",
 								buf, len);
 		return;
 	}
@@ -162,26 +149,26 @@ static void apr_cb_func(void *buf, int len, void *priv)
 	ver = hdr->hdr_field;
 	ver = (ver & 0x000F);
 	if (ver > APR_PKT_VER + 1) {
-		pr_err("APR: Wrong version: %d\n", ver);
+		pr_aud_err("APR: Wrong version: %d\n", ver);
 		return;
 	}
 
 	hdr_size = hdr->hdr_field;
 	hdr_size = ((hdr_size & 0x00F0) >> 0x4) * 4;
 	if (hdr_size < APR_HDR_SIZE) {
-		pr_err("APR: Wrong hdr size:%d\n", hdr_size);
+		pr_aud_err("APR: Wrong hdr size:%d\n", hdr_size);
 		return;
 	}
 
 	if (hdr->pkt_size < APR_HDR_SIZE) {
-		pr_err("APR: Wrong paket size\n");
+		pr_aud_err("APR: Wrong paket size\n");
 		return;
 	}
 	msg_type = hdr->hdr_field;
 	msg_type = (msg_type >> 0x08) & 0x0003;
 	if (msg_type >= APR_MSG_TYPE_MAX &&
 			msg_type != APR_BASIC_RSP_RESULT) {
-		pr_err("APR: Wrong message type: %d\n", msg_type);
+		pr_aud_err("APR: Wrong message type: %d\n", msg_type);
 		return;
 	}
 
@@ -189,7 +176,7 @@ static void apr_cb_func(void *buf, int len, void *priv)
 		hdr->dest_domain >= APR_DOMAIN_MAX ||
 		hdr->src_svc >= APR_SVC_MAX ||
 		hdr->dest_svc >= APR_SVC_MAX) {
-		pr_err("APR: Wrong APR header\n");
+		pr_aud_err("APR: Wrong APR header\n");
 		return;
 	}
 
@@ -201,7 +188,7 @@ static void apr_cb_func(void *buf, int len, void *priv)
 			svc == APR_SVC_TEST_CLIENT)
 			clnt = APR_CLIENT_VOICE;
 		else {
-			pr_err("APR: Wrong svc :%d\n", svc);
+			pr_aud_err("APR: Wrong svc :%d\n", svc);
 			return;
 		}
 	} else if (hdr->src_domain == APR_DOMAIN_ADSP) {
@@ -209,16 +196,15 @@ static void apr_cb_func(void *buf, int len, void *priv)
 		if (svc == APR_SVC_AFE || svc == APR_SVC_ASM ||
 			svc == APR_SVC_VSM || svc == APR_SVC_VPM ||
 			svc == APR_SVC_ADM || svc == APR_SVC_ADSP_CORE ||
-			svc == APR_SVC_USM ||
 			svc == APR_SVC_TEST_CLIENT || svc == APR_SVC_ADSP_MVM ||
 			svc == APR_SVC_ADSP_CVS || svc == APR_SVC_ADSP_CVP)
 			clnt = APR_CLIENT_AUDIO;
 		else {
-			pr_err("APR: Wrong svc :%d\n", svc);
+			pr_aud_err("APR: Wrong svc :%d\n", svc);
 			return;
 		}
 	} else {
-		pr_err("APR: Pkt from wrong source: %d\n", hdr->src_domain);
+		pr_aud_err("APR: Pkt from wrong source: %d\n", hdr->src_domain);
 		return;
 	}
 
@@ -232,7 +218,7 @@ static void apr_cb_func(void *buf, int len, void *priv)
 		}
 
 	if (i == APR_SVC_MAX) {
-		pr_err("APR: service is not registered\n");
+		pr_aud_err("APR: service is not registered\n");
 		return;
 	}
 	pr_debug("svc_idx = %d\n", i);
@@ -255,7 +241,7 @@ static void apr_cb_func(void *buf, int len, void *priv)
 	else if (c_svc->fn)
 		c_svc->fn(&data, c_svc->priv);
 	else
-		pr_err("APR: Rxed a packet for NULL callback\n");
+		pr_aud_err("APR: Rxed a packet for NULL callback\n");
 }
 
 struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
@@ -272,54 +258,50 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 	if (!dest || !svc_name || !svc_fn)
 		return NULL;
 
-	if (!strncmp(dest, "ADSP", 4))
+	if (!strcmp(dest, "ADSP"))
 		dest_id = APR_DEST_QDSP6;
-	else if (!strncmp(dest, "MODEM", 5)) {
+	else if (!strcmp(dest, "MODEM")) {
 		dest_id = APR_DEST_MODEM;
 	} else {
-		pr_err("APR: wrong destination\n");
+		pr_aud_err("APR: wrong destination\n");
 		goto done;
 	}
 
 	if ((dest_id == APR_DEST_QDSP6) &&
 				(atomic_read(&dsp_state) == 0)) {
-		pr_info("%s: Wait for Lpass to bootup\n", __func__);
-		rc = wait_event_interruptible_timeout(dsp_wait,
-				(atomic_read(&dsp_state) == 1), (1 * HZ));
+		rc = wait_event_timeout(dsp_wait,
+				(atomic_read(&dsp_state) == 1), 5*HZ);
 		if (rc == 0) {
-			pr_err("%s: DSP is not Up\n", __func__);
+			pr_aud_err("apr: Still dsp is not Up\n");
 			return NULL;
 		}
-		pr_info("%s: Lpass Up\n", __func__);
 	} else if ((dest_id == APR_DEST_MODEM) &&
 					(atomic_read(&modem_state) == 0)) {
-		pr_info("%s: Wait for modem to bootup\n", __func__);
-		rc = wait_event_interruptible_timeout(modem_wait,
-			(atomic_read(&modem_state) == 1), (1 * HZ));
+		rc = wait_event_timeout(modem_wait,
+			(atomic_read(&modem_state) == 1), 5*HZ);
 		if (rc == 0) {
-			pr_err("%s: Modem is not Up\n", __func__);
+			pr_aud_err("apr: Still Modem is not Up\n");
 			return NULL;
 		}
-		pr_info("%s: modem Up\n", __func__);
 	}
 
-	if (!strncmp(svc_name, "AFE", 3)) {
+	if (!strcmp(svc_name, "AFE")) {
 		client_id = APR_CLIENT_AUDIO;
 		svc_idx = 0;
 		svc_id = APR_SVC_AFE;
-	} else if (!strncmp(svc_name, "ASM", 3)) {
+	} else if (!strcmp(svc_name, "ASM")) {
 		client_id = APR_CLIENT_AUDIO;
 		svc_idx = 1;
 		svc_id = APR_SVC_ASM;
-	} else if (!strncmp(svc_name, "ADM", 3)) {
+	} else if (!strcmp(svc_name, "ADM")) {
 		client_id = APR_CLIENT_AUDIO;
 		svc_idx = 2;
 		svc_id = APR_SVC_ADM;
-	} else if (!strncmp(svc_name, "CORE", 4)) {
+	} else if (!strcmp(svc_name, "CORE")) {
 		client_id = APR_CLIENT_AUDIO;
 		svc_idx = 3;
 		svc_id = APR_SVC_ADSP_CORE;
-	} else if (!strncmp(svc_name, "TEST", 4)) {
+	} else if (!strcmp(svc_name, "TEST")) {
 		if (dest_id == APR_DEST_QDSP6) {
 			client_id = APR_CLIENT_AUDIO;
 			svc_idx = 4;
@@ -328,19 +310,19 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 			svc_idx = 7;
 		}
 		svc_id = APR_SVC_TEST_CLIENT;
-	} else if (!strncmp(svc_name, "VSM", 3)) {
+	} else if (!strcmp(svc_name, "VSM")) {
 		client_id = APR_CLIENT_VOICE;
 		svc_idx = 0;
 		svc_id = APR_SVC_VSM;
-	} else if (!strncmp(svc_name, "VPM", 3)) {
+	} else if (!strcmp(svc_name, "VPM")) {
 		client_id = APR_CLIENT_VOICE;
 		svc_idx = 1;
 		svc_id = APR_SVC_VPM;
-	} else if (!strncmp(svc_name, "MVS", 3)) {
+	} else if (!strcmp(svc_name, "MVS")) {
 		client_id = APR_CLIENT_VOICE;
 		svc_idx = 2;
 		svc_id = APR_SVC_MVS;
-	} else if (!strncmp(svc_name, "MVM", 3)) {
+	} else if (!strcmp(svc_name, "MVM")) {
 		if (dest_id == APR_DEST_MODEM) {
 			client_id = APR_CLIENT_VOICE;
 			svc_idx = 3;
@@ -350,7 +332,7 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 			svc_idx = 5;
 			svc_id = APR_SVC_ADSP_MVM;
 		}
-	} else if (!strncmp(svc_name, "CVS", 3)) {
+	} else if (!strcmp(svc_name, "CVS")) {
 		if (dest_id == APR_DEST_MODEM) {
 			client_id = APR_CLIENT_VOICE;
 			svc_idx = 4;
@@ -360,7 +342,7 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 			svc_idx = 6;
 			svc_id = APR_SVC_ADSP_CVS;
 		}
-	} else if (!strncmp(svc_name, "CVP", 3)) {
+	} else if (!strcmp(svc_name, "CVP")) {
 		if (dest_id == APR_DEST_MODEM) {
 			client_id = APR_CLIENT_VOICE;
 			svc_idx = 5;
@@ -370,16 +352,12 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 			svc_idx = 7;
 			svc_id = APR_SVC_ADSP_CVP;
 		}
-	} else if (!strncmp(svc_name, "SRD", 3)) {
+	} else if (!strcmp(svc_name, "SRD")) {
 		client_id = APR_CLIENT_VOICE;
 		svc_idx = 6;
 		svc_id = APR_SVC_SRD;
-	} else if (!strncmp(svc_name, "USM", 3)) {
-		client_id = APR_CLIENT_AUDIO;
-		svc_idx = 8;
-		svc_id = APR_SVC_USM;
 	} else {
-		pr_err("APR: Wrong svc name\n");
+		pr_aud_err("APR: Wrong svc name\n");
 		goto done;
 	}
 
@@ -387,16 +365,9 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 				svc_name, client_id, dest_id);
 	mutex_lock(&q6.lock);
 	if (q6.state == APR_Q6_NOIMG) {
-
-		pr_info("%s: Load Q6 image\n", __func__);
-		cancel_delayed_work_sync(&apr_q6_check_work);
-		queue_delayed_work(apr_reset_workqueue, &apr_q6_check_work,
-							msecs_to_jiffies(APR_Q6_CHECK_TIMEOUT));
-
 		q6.pil = pil_get("q6");
-		if (IS_ERR(q6.pil)) {
-			rc = PTR_ERR(q6.pil);
-			pr_err("APR: Unable to load q6 image, error:%d\n", rc);
+		if (!q6.pil) {
+			pr_aud_err("APR: Unable to load q6 image\n");
 			mutex_unlock(&q6.lock);
 			return svc;
 		}
@@ -409,7 +380,7 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 				dest_id, APR_DL_SMD, apr_cb_func, NULL);
 		if (!client[dest_id][client_id].handle) {
 			svc = NULL;
-			pr_err("APR: Unable to open handle\n");
+			pr_aud_err("APR: Unable to open handle\n");
 			mutex_unlock(&client[dest_id][client_id].m_lock);
 			goto done;
 		}
@@ -420,7 +391,7 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 	client[dest_id][client_id].id = client_id;
 	if (svc->need_reset) {
 		mutex_unlock(&svc->m_lock);
-		pr_err("APR: Service needs reset\n");
+		pr_aud_err("APR: Service needs reset\n");
 		goto done;
 	}
 	svc->priv = priv;
@@ -429,12 +400,13 @@ struct apr_svc *apr_register(char *dest, char *svc_name, apr_fn svc_fn,
 	svc->client_id = client_id;
 	if (src_port != 0xFFFFFFFF) {
 		temp_port = ((src_port >> 8) * 8) + (src_port & 0xFF);
-		pr_debug("port = %d t_port = %d\n", src_port, temp_port);
-		if (temp_port >= APR_MAX_PORTS || temp_port < 0) {
-			pr_err("APR: temp_port out of bounds\n");
+		if (temp_port >= APR_MAX_PORTS) {
 			mutex_unlock(&svc->m_lock);
-			return NULL;
+			pr_aud_err("APR: illegal port ID %d\n", temp_port);
+			svc = NULL;
+			goto done;
 		}
+		pr_debug("port = %d t_port = %d\n", src_port, temp_port);
 		if (!svc->port_cnt && !svc->svc_cnt)
 			client[dest_id][client_id].svc_cnt++;
 		svc->port_cnt++;
@@ -465,6 +437,7 @@ static void apr_reset_deregister(struct work_struct *work)
 	pr_debug("%s:handle[%p]\n", __func__, handle);
 	apr_deregister(handle);
 	kfree(apr_reset);
+	msleep(5);
 }
 
 int apr_deregister(void *handle)
@@ -525,19 +498,12 @@ void apr_reset(void *handle)
 		return;
 	pr_debug("%s: handle[%p]\n", __func__, handle);
 
-	if (apr_reset_workqueue == NULL) {
-		pr_err("%s: apr_reset_workqueue is NULL\n", __func__);
-		return;
-	}
-
 	apr_reset_worker = kzalloc(sizeof(struct apr_reset_work),
-							GFP_ATOMIC);
-
-	if (apr_reset_worker == NULL) {
-		pr_err("%s: mem failure\n", __func__);
+					GFP_ATOMIC);
+	if (apr_reset_worker == NULL || apr_reset_workqueue == NULL) {
+		pr_aud_err("%s: mem failure\n", __func__);
 		return;
 	}
-
 	apr_reset_worker->handle = handle;
 	INIT_WORK(&apr_reset_worker->work, apr_reset_deregister);
 	queue_work(apr_reset_workqueue, &apr_reset_worker->work);
@@ -552,10 +518,11 @@ void change_q6_state(int state)
 
 int adsp_state(int state)
 {
-	pr_info("dsp state = %d\n", state);
+	pr_aud_info("dsp state = %d\n", state);
 	return 0;
 }
 
+/* Dispatch the Reset events to Modem and audio clients */
 void dispatch_event(unsigned long code, unsigned short proc)
 {
 	struct apr_client *apr_client;
@@ -630,7 +597,7 @@ static int modem_notifier_cb(struct notifier_block *this, unsigned long code,
 		pr_debug("M-Notify: Bootup Completed\n");
 		break;
 	default:
-		pr_err("M-Notify: General: %lu\n", code);
+		pr_aud_err("M-Notify: General: %lu\n", code);
 		break;
 	}
 	return NOTIFY_DONE;
@@ -663,7 +630,7 @@ static int lpass_notifier_cb(struct notifier_block *this, unsigned long code,
 		pr_debug("L-Notify: Bootup Completed\n");
 		break;
 	default:
-		pr_err("L-Notify: Generel: %lu\n", code);
+		pr_aud_err("L-Notify: Generel: %lu\n", code);
 		break;
 	}
 	return NOTIFY_DONE;
@@ -678,6 +645,7 @@ static int __init apr_init(void)
 {
 	int i, j, k;
 
+	pr_aud_info("apr_probe\n");
 	for (i = 0; i < APR_DEST_MAX; i++)
 		for (j = 0; j < APR_CLIENT_MAX; j++) {
 			mutex_init(&client[i][j].m_lock);
@@ -692,22 +660,22 @@ static int __init apr_init(void)
 		create_singlethread_workqueue("apr_driver");
 	if (!apr_reset_workqueue)
 		return -ENOMEM;
-
-	INIT_DELAYED_WORK(&apr_q6_check_work, apr_q6_check_worker);
-
 	return 0;
 }
 device_initcall(apr_init);
 
 static int __init apr_late_init(void)
 {
-	int ret = 0;
+	void *ret;
 	init_waitqueue_head(&dsp_wait);
 	init_waitqueue_head(&modem_wait);
 	atomic_set(&dsp_state, 1);
 	atomic_set(&modem_state, 1);
-	subsys_notif_register_notifier("modem", &mnb);
-	subsys_notif_register_notifier("lpass", &lnb);
-	return ret;
+	ret = subsys_notif_register_notifier("modem", &mnb);
+	pr_debug("subsys_register_notifier: ret1 = %p\n", ret);
+	ret = subsys_notif_register_notifier("lpass", &lnb);
+	pr_debug("subsys_register_notifier: ret2 = %p\n", ret);
+
+	return 0;
 }
 late_initcall(apr_late_init);

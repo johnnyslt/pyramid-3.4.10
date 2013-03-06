@@ -26,15 +26,13 @@
  * IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  */
-#ifndef __MACH_QDSP6_V2_SNDDEV_HDMI_H
-#define __MACH_QDSP6_V2_SNDDEV_HDMI_H
+#ifndef __DSP_DEBUG_H_
+#define __DSP_DEBUG_H_
 
-struct snddev_hdmi_data {
-	u32 capability;		/* RX or TX */
-	const char *name;
-	u32 copp_id;		/* audpp routing */
-	u32 acdb_id;		/* Audio Cal purpose */
-	u8 channel_mode;
-	u32 default_sample_rate;
-};
+typedef int (*dsp_state_cb)(int state);
+int dsp_debug_register(dsp_state_cb ptr);
+
+#define DSP_STATE_CRASHED         0x0
+#define DSP_STATE_CRASH_DUMP_DONE 0x1
+
 #endif

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,6 +8,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  *
  */
 #include <linux/module.h>
@@ -19,17 +24,10 @@
 #include <linux/slab.h>
 #include <asm/uaccess.h>
 #include <mach/qdsp6v2/audio_dev_ctl.h>
+#include <mach/qdsp6v2/apr_audio.h>
 #include <mach/debug_mm.h>
-#include <sound/q6afe.h>
-#include <sound/apr_audio.h>
+#include <mach/qdsp6v2/q6afe.h>
 #include <mach/qdsp6v2/snddev_hdmi.h>
-
-#ifdef CONFIG_MACH_PYRAMID
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
-#endif
 
 static DEFINE_MUTEX(snddev_hdmi_lock);
 static int snddev_hdmi_active;
@@ -41,7 +39,7 @@ static int snddev_hdmi_open(struct msm_snddev_info *dev_info)
 	struct snddev_hdmi_data *snddev_hdmi_data;
 
 	if (!dev_info) {
-		pr_err("msm_snddev_info is null\n");
+		pr_aud_err("msm_snddev_info is null\n");
 		return -EINVAL;
 	}
 
@@ -50,18 +48,10 @@ static int snddev_hdmi_open(struct msm_snddev_info *dev_info)
 	mutex_lock(&snddev_hdmi_lock);
 
 	if (snddev_hdmi_active) {
-		pr_err("HDMI snddev already active\n");
+		pr_aud_err("HDMI snddev already active\n");
 		mutex_unlock(&snddev_hdmi_lock);
 		return -EBUSY;
 	}
-
-	if (snddev_hdmi_data->on_apps) {
-		snddev_hdmi_active = 1;
-		pr_debug("%s open done\n", dev_info->name);
-		mutex_unlock(&snddev_hdmi_lock);
-		return 0;
-	}
-
 	afe_config.hdmi.channel_mode = snddev_hdmi_data->channel_mode;
 	afe_config.hdmi.bitwidth = 16;
 	afe_config.hdmi.data_type = 0;
@@ -69,7 +59,7 @@ static int snddev_hdmi_open(struct msm_snddev_info *dev_info)
 		dev_info->sample_rate);
 
 	if (rc < 0) {
-		pr_err("afe_open failed\n");
+		pr_aud_err("afe_open failed\n");
 		mutex_unlock(&snddev_hdmi_lock);
 		return -EINVAL;
 	}
@@ -84,37 +74,24 @@ static int snddev_hdmi_open(struct msm_snddev_info *dev_info)
 
 static int snddev_hdmi_close(struct msm_snddev_info *dev_info)
 {
-
-	struct snddev_hdmi_data *snddev_hdmi_data;
-
 	if (!dev_info) {
-		pr_err("msm_snddev_info is null\n");
+		pr_aud_err("msm_snddev_info is null\n");
 		return -EINVAL;
 	}
 
-	snddev_hdmi_data = dev_info->private_data;
-
 	if (!dev_info->opened) {
-		pr_err("calling close device with out opening the"
+		pr_aud_err("calling close device with out opening the"
 		       " device\n");
 		return -EPERM;
 	}
 	mutex_lock(&snddev_hdmi_lock);
 
 	if (!snddev_hdmi_active) {
-		pr_err("HDMI snddev not active\n");
+		pr_aud_err("HDMI snddev not active\n");
 		mutex_unlock(&snddev_hdmi_lock);
 		return -EPERM;
 	}
 	snddev_hdmi_active = 0;
-
-	if (snddev_hdmi_data->on_apps) {
-		pr_debug("%s Closed\n", dev_info->name);
-
-		mutex_unlock(&snddev_hdmi_lock);
-		return 0;
-	}
-
 
 	afe_close(HDMI_RX);
 
@@ -146,13 +123,13 @@ static int snddev_hdmi_probe(struct platform_device *pdev)
 
 	pdata = pdev->dev.platform_data;
 	if (!(pdata->capability & SNDDEV_CAP_RX)) {
-		pr_err("invalid device data either RX or TX\n");
+		pr_aud_err("invalid device data either RX or TX\n");
 		return -ENODEV;
 	}
 
 	dev_info = kzalloc(sizeof(struct msm_snddev_info), GFP_KERNEL);
 	if (!dev_info) {
-		pr_err("unable to allocate memeory for msm_snddev_info\n");
+		pr_aud_err("unable to allocate memeory for msm_snddev_info\n");
 		return -ENOMEM;
 	}
 
@@ -184,7 +161,7 @@ static int __init snddev_hdmi_init(void)
 	rc = platform_driver_register(&snddev_hdmi_driver);
 	if (IS_ERR_VALUE(rc)) {
 
-		pr_err("platform_driver_register failed.\n");
+		pr_aud_err("platform_driver_register failed.\n");
 		goto error_platform_driver;
 	}
 
@@ -194,7 +171,7 @@ static int __init snddev_hdmi_init(void)
 
 error_platform_driver:
 
-	pr_err("encounterd error\n");
+	pr_aud_err("encounterd error\n");
 	return -ENODEV;
 }
 

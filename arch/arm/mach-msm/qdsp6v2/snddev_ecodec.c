@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010-2011, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,6 +8,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  *
  */
 #include <linux/module.h>
@@ -22,27 +27,25 @@
 #include <asm/io.h>
 #include <mach/clk.h>
 #include <mach/qdsp6v2/audio_dev_ctl.h>
-#include <sound/apr_audio.h>
-#include <sound/q6afe.h>
+#include <mach/qdsp6v2/apr_audio.h>
 #include <mach/qdsp6v2/snddev_ecodec.h>
 
+#include <mach/qdsp6v2/q6afe.h>
+
 #define ECODEC_SAMPLE_RATE 8000
+static struct q6v2audio_ecodec_ops default_audio_ops;
+static struct q6v2audio_ecodec_ops *audio_ops = &default_audio_ops;
 
-#ifdef CONFIG_MACH_PYRAMID
-#undef pr_info
-#undef pr_err
-#define pr_info(fmt, ...) pr_aud_info(fmt, ##__VA_ARGS__)
-#define pr_err(fmt, ...) pr_aud_err(fmt, ##__VA_ARGS__)
-#endif
-
+/* Context for each external codec device */
 struct snddev_ecodec_state {
 	struct snddev_ecodec_data *data;
 	u32 sample_rate;
 };
 
+/* Global state for the driver */
 struct snddev_ecodec_drv_state {
 	struct mutex dev_lock;
-	int ref_cnt;		
+	int ref_cnt;		/* ensure one rx device at a time */
 	struct clk *ecodec_clk;
 };
 
@@ -60,77 +63,34 @@ static struct aux_pcm_state the_aux_pcm_state;
 static int aux_pcm_gpios_request(void)
 {
 	int rc = 0;
-
-#ifdef CONFIG_MACH_PYRAMID
 	uint32_t bt_config_gpio[] = {
 		GPIO_CFG(the_aux_pcm_state.dout, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 		GPIO_CFG(the_aux_pcm_state.din, 1, GPIO_CFG_INPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 		GPIO_CFG(the_aux_pcm_state.syncout, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 		GPIO_CFG(the_aux_pcm_state.clkin_a, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 	};
-
+	pr_debug("%s\n", __func__);
 	gpio_tlmm_config(bt_config_gpio[0], GPIO_CFG_ENABLE);
 	gpio_tlmm_config(bt_config_gpio[1], GPIO_CFG_ENABLE);
 	gpio_tlmm_config(bt_config_gpio[2], GPIO_CFG_ENABLE);
 	gpio_tlmm_config(bt_config_gpio[3], GPIO_CFG_ENABLE);
-#else
-	rc = gpio_request(the_aux_pcm_state.dout, "AUX PCM DOUT");
-	if (rc < 0) {
-		pr_err("%s: GPIO request for AUX PCM DOUT failed\n", __func__);
-		return rc;
-	}
 
-	rc = gpio_request(the_aux_pcm_state.din, "AUX PCM DIN");
-	if (rc < 0) {
-		pr_err("%s: GPIO request for AUX PCM DIN failed\n", __func__);
-		gpio_free(the_aux_pcm_state.dout);
-		return rc;
-	}
-
-	rc = gpio_request(the_aux_pcm_state.syncout, "AUX PCM SYNC OUT");
-	if (rc < 0) {
-		pr_err("%s: GPIO request for AUX PCM SYNC OUT failed\n",
-				__func__);
-		gpio_free(the_aux_pcm_state.dout);
-		gpio_free(the_aux_pcm_state.din);
-		return rc;
-	}
-
-	rc = gpio_request(the_aux_pcm_state.clkin_a, "AUX PCM CLKIN A");
-	if (rc < 0) {
-		pr_err("%s: GPIO request for AUX PCM CLKIN A failed\n",
-				__func__);
-		gpio_free(the_aux_pcm_state.dout);
-		gpio_free(the_aux_pcm_state.din);
-		gpio_free(the_aux_pcm_state.syncout);
-		return rc;
-	}
-#endif
-
-	pr_debug("%s\n", __func__);
 	return rc;
 }
 
 static void aux_pcm_gpios_free(void)
 {
-#ifdef CONFIG_MACH_PYRAMID
 	uint32_t bt_config_gpio[] = {
 		GPIO_CFG(the_aux_pcm_state.dout, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 		GPIO_CFG(the_aux_pcm_state.din, 0, GPIO_CFG_INPUT, GPIO_CFG_PULL_DOWN, GPIO_CFG_2MA),
 		GPIO_CFG(the_aux_pcm_state.syncout, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 		GPIO_CFG(the_aux_pcm_state.clkin_a, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 	};
+	pr_debug("%s\n", __func__);
 	gpio_tlmm_config(bt_config_gpio[0], GPIO_CFG_DISABLE);
 	gpio_tlmm_config(bt_config_gpio[1], GPIO_CFG_DISABLE);
 	gpio_tlmm_config(bt_config_gpio[2], GPIO_CFG_DISABLE);
 	gpio_tlmm_config(bt_config_gpio[3], GPIO_CFG_DISABLE);
-#else
-	gpio_free(the_aux_pcm_state.dout);
-	gpio_free(the_aux_pcm_state.din);
-	gpio_free(the_aux_pcm_state.syncout);
-	gpio_free(the_aux_pcm_state.clkin_a);
-#endif
-	pr_debug("%s\n", __func__);
 }
 
 static int get_aux_pcm_gpios(struct platform_device *pdev)
@@ -138,10 +98,10 @@ static int get_aux_pcm_gpios(struct platform_device *pdev)
 	int rc = 0;
 	struct resource *res;
 
-	
+	/* Claim all of the GPIOs. */
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO, "aux_pcm_dout");
 	if (!res) {
-		pr_err("%s: failed to get gpio AUX PCM DOUT\n", __func__);
+		pr_aud_err("%s: failed to get gpio AUX PCM DOUT\n", __func__);
 		return -ENODEV;
 	}
 
@@ -149,7 +109,7 @@ static int get_aux_pcm_gpios(struct platform_device *pdev)
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO, "aux_pcm_din");
 	if (!res) {
-		pr_err("%s: failed to get gpio AUX PCM DIN\n", __func__);
+		pr_aud_err("%s: failed to get gpio AUX PCM DIN\n", __func__);
 		return -ENODEV;
 	}
 
@@ -158,7 +118,7 @@ static int get_aux_pcm_gpios(struct platform_device *pdev)
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO,
 					   "aux_pcm_syncout");
 	if (!res) {
-		pr_err("%s: failed to get gpio AUX PCM SYNC OUT\n", __func__);
+		pr_aud_err("%s: failed to get gpio AUX PCM SYNC OUT\n", __func__);
 		return -ENODEV;
 	}
 
@@ -167,17 +127,15 @@ static int get_aux_pcm_gpios(struct platform_device *pdev)
 	res = platform_get_resource_byname(pdev, IORESOURCE_IO,
 					   "aux_pcm_clkin_a");
 	if (!res) {
-		pr_err("%s: failed to get gpio AUX PCM CLKIN A\n", __func__);
+		pr_aud_err("%s: failed to get gpio AUX PCM CLKIN A\n", __func__);
 		return -ENODEV;
 	}
 
 	the_aux_pcm_state.clkin_a = res->start;
 
-#ifdef CONFIG_MACH_PYRAMID
 	pr_aud_info("%s: dout = %u, din = %u , syncout = %u, clkin_a =%u\n",
 		__func__, the_aux_pcm_state.dout, the_aux_pcm_state.din,
 		the_aux_pcm_state.syncout, the_aux_pcm_state.clkin_a);
-#endif
 
 	return rc;
 }
@@ -187,9 +145,10 @@ static int aux_pcm_probe(struct platform_device *pdev)
 	int rc = 0;
 
 	pr_aud_info("%s:\n", __func__);
+
 	rc = get_aux_pcm_gpios(pdev);
 	if (rc < 0) {
-		pr_err("%s: GPIO configuration failed\n", __func__);
+		pr_aud_err("%s: GPIO configuration failed\n", __func__);
 		return -ENODEV;
 	}
 	return rc;
@@ -211,7 +170,7 @@ static int snddev_ecodec_open(struct msm_snddev_info *dev_info)
 	mutex_lock(&drv->dev_lock);
 
 	if (dev_info->opened) {
-		pr_err("%s: ERROR: %s already opened\n", __func__,
+		pr_aud_err("%s: ERROR: %s already opened\n", __func__,
 				dev_info->name);
 		mutex_unlock(&drv->dev_lock);
 		return -EBUSY;
@@ -224,11 +183,11 @@ static int snddev_ecodec_open(struct msm_snddev_info *dev_info)
 		return 0;
 	}
 
-	pr_info("%s: opening %s\n", __func__, dev_info->name);
+	pr_aud_info("%s: opening %s\n", __func__, dev_info->name);
 
 	rc = aux_pcm_gpios_request();
 	if (rc < 0) {
-		pr_err("%s: GPIO request failed\n", __func__);
+		pr_aud_err("%s: GPIO request failed\n", __func__);
 		return rc;
 	}
 
@@ -243,23 +202,23 @@ static int snddev_ecodec_open(struct msm_snddev_info *dev_info)
 
 	rc = afe_open(PCM_RX, &afe_config, ECODEC_SAMPLE_RATE);
 	if (rc < 0) {
-		pr_err("%s: afe open failed for PCM_RX\n", __func__);
+		pr_aud_err("%s: afe open failed for PCM_RX\n", __func__);
 		goto err_rx_afe;
 	}
 
 	rc = afe_open(PCM_TX, &afe_config, ECODEC_SAMPLE_RATE);
 	if (rc < 0) {
-		pr_err("%s: afe open failed for PCM_TX\n", __func__);
+		pr_aud_err("%s: afe open failed for PCM_TX\n", __func__);
 		goto err_tx_afe;
 	}
 
 	rc = clk_set_rate(drv->ecodec_clk, 2048000);
 	if (rc < 0) {
-		pr_err("%s: clk_set_rate failed\n", __func__);
+		pr_aud_err("%s: clk_set_rate failed\n", __func__);
 		goto err_clk;
 	}
 
-	clk_prepare_enable(drv->ecodec_clk);
+	clk_enable(drv->ecodec_clk);
 
 	clk_reset(drv->ecodec_clk, CLK_RESET_DEASSERT);
 
@@ -287,7 +246,7 @@ int snddev_ecodec_close(struct msm_snddev_info *dev_info)
 	mutex_lock(&drv->dev_lock);
 
 	if (!dev_info->opened) {
-		pr_err("%s: ERROR: %s is not opened\n", __func__,
+		pr_aud_err("%s: ERROR: %s is not opened\n", __func__,
 				dev_info->name);
 		mutex_unlock(&drv->dev_lock);
 		return -EPERM;
@@ -297,9 +256,9 @@ int snddev_ecodec_close(struct msm_snddev_info *dev_info)
 
 	if (drv->ref_cnt == 0) {
 
-		pr_info("%s: closing all devices\n", __func__);
+		pr_aud_info("%s: closing all devices\n", __func__);
 
-		clk_disable_unprepare(drv->ecodec_clk);
+		clk_disable(drv->ecodec_clk);
 		aux_pcm_gpios_free();
 
 		afe_close(PCM_RX);
@@ -323,6 +282,11 @@ int snddev_ecodec_set_freq(struct msm_snddev_info *dev_info, u32 rate)
 
 error:
 	return rc;
+}
+
+void htc_8x60_register_ecodec_ops(struct q6v2audio_ecodec_ops *ops)
+{
+	audio_ops = ops;
 }
 
 static int snddev_ecodec_probe(struct platform_device *pdev)
@@ -367,7 +331,7 @@ static int snddev_ecodec_probe(struct platform_device *pdev)
 	msm_snddev_register(dev_info);
 
 	ecodec->data = pdata;
-	ecodec->sample_rate = ECODEC_SAMPLE_RATE;	
+	ecodec->sample_rate = ECODEC_SAMPLE_RATE;	/* Default to 8KHz */
 error:
 	return rc;
 }
@@ -387,26 +351,25 @@ int __init snddev_ecodec_init(void)
 	mutex_init(&drv->dev_lock);
 	drv->ref_cnt = 0;
 
-	drv->ecodec_clk = clk_get_sys(NULL, "pcm_clk");
+	drv->ecodec_clk = clk_get(NULL, "pcm_clk");
 	if (IS_ERR(drv->ecodec_clk)) {
-		pr_err("%s: could not get pcm_clk\n", __func__);
+		pr_aud_err("%s: could not get pcm_clk\n", __func__);
 		return PTR_ERR(drv->ecodec_clk);
 	}
 
 	rc = platform_driver_register(&aux_pcm_driver);
 	if (IS_ERR_VALUE(rc)) {
-		pr_err("%s: platform_driver_register for aux pcm failed\n",
+		pr_aud_err("%s: platform_driver_register for aux pcm failed\n",
 				__func__);
 		goto error_aux_pcm_platform_driver;
 	}
 
 	rc = platform_driver_register(&snddev_ecodec_driver);
 	if (IS_ERR_VALUE(rc)) {
-		pr_err("%s: platform_driver_register for ecodec failed\n",
+		pr_aud_err("%s: platform_driver_register for ecodec failed\n",
 				__func__);
 		goto error_ecodec_platform_driver;
 	}
-
 	pr_aud_info("%s: done\n", __func__);
 
 	return 0;
@@ -416,7 +379,7 @@ error_ecodec_platform_driver:
 error_aux_pcm_platform_driver:
 	clk_put(drv->ecodec_clk);
 
-	pr_err("%s: encounter error\n", __func__);
+	pr_aud_err("%s: encounter error\n", __func__);
 	return -ENODEV;
 }
 

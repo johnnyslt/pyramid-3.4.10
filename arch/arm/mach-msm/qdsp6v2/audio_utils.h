@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2012, Code Aurora Forum. All rights reserved.
+/* Copyright (c) 2010, Code Aurora Forum. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -9,9 +9,13 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
+ *
 */
 #include <linux/msm_audio.h>
-#include "q6audio_common.h"
 
 #define FRAME_NUM	(8)
 
@@ -27,18 +31,18 @@
 #define BUF_ALLOC_INOUT 0x03
 #define ALIGN_BUF_SIZE(size) ((size + 4095) & (~4095))
 
-struct timestamp {
+struct timestamp{
 	unsigned long lowpart;
 	unsigned long highpart;
 } __attribute__ ((packed));
 
-struct meta_in {
+struct meta_in{
 	unsigned short offset;
 	struct timestamp ntimestamp;
 	unsigned int nflags;
 } __attribute__ ((packed));
 
-struct meta_out_dsp {
+struct meta_out_dsp{
 	u32 offset_to_frame;
 	u32 frame_size;
 	u32 encoded_pcm_samples;
@@ -47,12 +51,12 @@ struct meta_out_dsp {
 	u32 nflags;
 } __attribute__ ((packed));
 
-struct meta_out {
+struct meta_out{
 	unsigned char num_of_frames;
 	struct meta_out_dsp meta_out_dsp[];
 } __attribute__ ((packed));
 
-struct q6audio_in {
+struct q6audio_in{
 	spinlock_t			dsp_lock;
 	atomic_t			in_bytes;
 	atomic_t			in_samples;
@@ -70,17 +74,18 @@ struct q6audio_in {
 	struct msm_audio_config		pcm_cfg;
 	void				*codec_cfg;
 
-	
+	/* number of buffers available to read/write */
 	atomic_t			in_count;
 	atomic_t			out_count;
 
-	
+	/* first idx: num of frames per buf, second idx: offset to frame */
 	uint32_t			out_frame_info[FRAME_NUM][2];
 	int				eos_rsp;
 	int				opened;
 	int				enabled;
 	int				stopped;
-	int				feedback; 
+	int				feedback; /* Flag indicates whether used
+							in Non Tunnel mode */
 	int				rflush;
 	int				wflush;
 	int				buf_alloc;
@@ -89,6 +94,8 @@ struct q6audio_in {
 	long (*enc_ioctl)(struct file *, unsigned int, unsigned long);
 };
 
+void  audio_in_get_dsp_frames(struct q6audio_in *audio,
+		uint32_t token,	uint32_t *payload);
 int audio_in_enable(struct q6audio_in  *audio);
 int audio_in_disable(struct q6audio_in  *audio);
 int audio_in_buf_alloc(struct q6audio_in *audio);
