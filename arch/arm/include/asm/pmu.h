@@ -51,7 +51,6 @@ release_pmu(enum arm_pmu_type type)	{ }
 
 #endif 
 
-#ifdef CONFIG_HW_PERF_EVENTS
 
 struct pmu_hw_events {
 	struct perf_event	**events;
@@ -106,4 +105,3 @@ int armpmu_event_set_period(struct perf_event *event,
 
 #endif 
 
-#endif 
