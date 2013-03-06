@@ -50,6 +50,9 @@ struct cpuidle_state {
 			int index);
 
 	int (*enter_dead) (struct cpuidle_device *dev, int index);
+
+	unsigned long long	usage;
+	unsigned long long	time; /* in US */
 };
 
 #define CPUIDLE_FLAG_TIME_VALID	(0x01) 
