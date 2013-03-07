@@ -100,6 +100,12 @@ struct android_pmem_platform_data
 	const char* name;
 	
 	unsigned long size;
+	/* start physical address of memory region
+	 * if start is 0 or negative value, use android default behavior.
+	 * otherwise, just assign it to pmem info base.
+	 * android will handle remaining remap things.
+	 */
+	unsigned long start;
 
 	enum pmem_allocator_type allocator_type;
 	unsigned int quantum;
