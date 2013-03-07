@@ -20,6 +20,7 @@
 #include <linux/err.h>
 #include <linux/debugfs.h>
 #include <linux/gpio.h>
+#include <linux/module.h>
 
 #include <asm/gpio.h>
 #include <asm/io.h>

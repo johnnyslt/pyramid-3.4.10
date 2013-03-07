@@ -113,9 +113,10 @@
 #include <mach/cable_detect.h>
 
 #include "board-shooter_u.h"
+#include <mach/board-msm8660.h>
 #include "devices.h"
 #include "devices-msm8x60.h"
-#include <mach/cpuidle.h>
+#include "cpuidle.h"
 #include "pm.h"
 #include "pm-boot.h"
 #include <mach/mpm.h>
@@ -920,6 +921,33 @@ static struct msm_rpmrs_level msm_rpmrs_levels[] = {
 		MSM_RPMRS_LIMITS(OFF, HSFS_OPEN, RET_HIGH, RET_LOW),
 		false,
 		7800, 0, 76350000, 9800,
+	},
+};
+
+static struct msm_rpmrs_platform_data msm_rpmrs_data __initdata = {
+	.levels = &msm_rpmrs_levels[0],
+	.num_levels = ARRAY_SIZE(msm_rpmrs_levels),
+	.vdd_mem_levels  = {
+		[MSM_RPMRS_VDD_MEM_RET_LOW]     = 500,
+		[MSM_RPMRS_VDD_MEM_RET_HIGH]    = 750,
+		[MSM_RPMRS_VDD_MEM_ACTIVE]      = 1000,
+		[MSM_RPMRS_VDD_MEM_MAX]         = 1325,
+	},
+	.vdd_dig_levels = {
+		[MSM_RPMRS_VDD_DIG_RET_LOW]     = 500,
+		[MSM_RPMRS_VDD_DIG_RET_HIGH]    = 750,
+		[MSM_RPMRS_VDD_DIG_ACTIVE]      = 1000,
+		[MSM_RPMRS_VDD_DIG_MAX]         = 1250,
+	},
+	.vdd_mask = 0xFFF,
+	.rpmrs_target_id = {
+		[MSM_RPMRS_ID_PXO_CLK]          = MSM_RPM_ID_PXO_CLK,
+		[MSM_RPMRS_ID_L2_CACHE_CTL]     = MSM_RPM_ID_APPS_L2_CACHE_CTL,
+		[MSM_RPMRS_ID_VDD_DIG_0]        = MSM_RPM_ID_SMPS1_0,
+		[MSM_RPMRS_ID_VDD_DIG_1]        = MSM_RPM_ID_SMPS1_1,
+		[MSM_RPMRS_ID_VDD_MEM_0]        = MSM_RPM_ID_SMPS0_0,
+		[MSM_RPMRS_ID_VDD_MEM_1]        = MSM_RPM_ID_SMPS0_1,
+		[MSM_RPMRS_ID_RPM_CTL]          = MSM_RPM_ID_TRIGGER_SET_FROM,
 	},
 };
 
@@ -6538,7 +6566,7 @@ static void __init msm8x60_cfg_smsc911x(void)
 		PM8058_GPIO_IRQ(PM8058_IRQ_BASE, 6);
 }
 
-#ifdef CONFIG_MSM_RPM
+/*#ifdef CONFIG_MSM_RPM
 static struct msm_rpm_platform_data msm_rpm_data = {
 	.reg_base_addrs = {
 		[MSM_RPM_PAGE_STATUS] = MSM_RPM_BASE,
@@ -6554,7 +6582,7 @@ static struct msm_rpm_platform_data msm_rpm_data = {
 	.msm_apps_ipc_rpm_reg = MSM_GCC_BASE + 0x008,
 	.msm_apps_ipc_rpm_val = 4,
 };
-#endif
+#endif*/
 
 void msm_fusion_setup_pinctrl(void)
 {
@@ -6630,11 +6658,9 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 	 * Initialize RPM first as other drivers and devices may need
 	 * it for their initialization.
 	 */
-#ifdef CONFIG_MSM_RPM
-	BUG_ON(msm_rpm_init(&msm_rpm_data));
-#endif
-	BUG_ON(msm_rpmrs_levels_init(msm_rpmrs_levels,
-				ARRAY_SIZE(msm_rpmrs_levels)));
+	BUG_ON(msm_rpm_init(&msm8660_rpm_data));
+	BUG_ON(msm_rpmrs_levels_init(&msm_rpmrs_data));
+	msm_rpm_lpm_init(regulator_lpm_set, ARRAY_SIZE(regulator_lpm_set));
 
 	/*
 	* Set low power mode of rpm resources:
@@ -6680,9 +6706,9 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 	platform_add_devices(early_regulators, ARRAY_SIZE(early_regulators));
 
 	/*added by htc for clock debugging*/
-	clk_ignor_list_add("msm_serial_hsl.0", "core_clk");
-	clk_ignor_list_add("msm_sdcc.4", "core_clk");
-	clk_ignor_list_add("msm_sdcc.4", "iface_clk");
+	clk_ignor_list_add("msm_serial_hsl.0", "core_clk", &msm8x60_clock_init_data);
+	clk_ignor_list_add("msm_sdcc.4", "core_clk", &msm8x60_clock_init_data);
+	clk_ignor_list_add("msm_sdcc.4", "iface_clk", &msm8x60_clock_init_data);
 
 	msm_clock_init(&msm8x60_clock_init_data);
 
@@ -6695,7 +6721,7 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 	msm8x60_init_buses();
 	platform_add_devices(early_devices, ARRAY_SIZE(early_devices));
 	/* CPU frequency control is not supported on simulated targets. */
-	acpuclk_init(&acpuclk_8x60_soc_data);
+//	acpuclk_init();
 
 #ifdef CONFIG_PERFLOCK
 	perflock_init(&shooter_u_perflock_data);
@@ -6762,16 +6788,16 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 	fixup_i2c_configs();
 	register_i2c_devices();
 
-	if (ps_type == 1) {
+/*	if (ps_type == 1) {
 		i2c_register_board_info(MSM_GSBI10_QUP_I2C_BUS_ID,
 			i2c_isl29028_devices,
 			ARRAY_SIZE(i2c_isl29028_devices));
-	} else if (ps_type == 2) {
+	} else if (ps_type == 2) { */
 		i2c_register_board_info(MSM_GSBI10_QUP_I2C_BUS_ID,
 			i2c_isl29029_devices,
 			ARRAY_SIZE(i2c_isl29029_devices));
-	} else
-		printk(KERN_DEBUG "No Intersil chips\n");
+	//} else
+	//	printk(KERN_DEBUG "No Intersil chips\n");
 
 	platform_device_register(&smsc911x_device);
 
@@ -6779,7 +6805,7 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 	msm_pm_set_rpm_wakeup_irq(RPM_SCSS_CPU0_WAKE_UP_IRQ);
 	msm_cpuidle_set_states(msm_cstates, ARRAY_SIZE(msm_cstates),
 				msm_pm_data);
-	BUG_ON(msm_pm_boot_init(MSM_PM_BOOT_CONFIG_TZ, NULL));
+	BUG_ON(msm_pm_boot_init(MSM_PM_BOOT_CONFIG_TZ));
 
 	pm8058_gpios_init();
 
@@ -6814,7 +6840,7 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 		printk(KERN_ERR "[HS_BOARD]Enable sddc vddp power failed\n");
 	headset_device_register();
 
-	msm_mpm_set_irq_ignore_list(irq_ignore_tbl, irq_num_ignore_tbl);
+//	msm_mpm_set_irq_ignore_list(irq_ignore_tbl, irq_num_ignore_tbl);
 }
 
 static void __init shooter_u_init(void)
@@ -6828,7 +6854,9 @@ static void __init shooter_u_charm_init_early(void)
 	msm8x60_allocate_memory_regions();
 }
 
-static void __init shooter_u_fixup(struct machine_desc *desc, struct tag *tags,
+int __init parse_tag_memsize(const struct tag *tags);
+
+static void __init shooter_u_fixup(struct tag *tags,
 		char **cmdline, struct meminfo *mi)
 {
 	mem_size_mb = parse_tag_memsize((const struct tag *)tags);
@@ -6850,4 +6878,5 @@ MACHINE_START(SHOOTER_U, "shooter_u")
 	.init_machine = shooter_u_init,
 	.timer = &msm_timer,
 	.init_early = shooter_u_charm_init_early,
+	.restart = msm_restart,
 MACHINE_END
