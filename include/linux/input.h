@@ -756,7 +756,7 @@ struct input_keymap_entry {
 #define SW_UNSUPPORT_INSERT	0x10  
 #define SW_MAX			0x20
 #define SW_CNT			(SW_MAX+1)
-
+#define SW_CAM                      0x0e  /* set = 3D/Video mode for camera */
 
 #define MSC_SERIAL		0x00
 #define MSC_PULSELED		0x01
