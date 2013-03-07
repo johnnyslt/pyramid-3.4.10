@@ -173,6 +173,7 @@ struct mmc_platform_data {
 	int emmc_dma_ch;
 	struct msm_mmc_bus_voting_data *msm_bus_voting_data;
 	u32 swfi_latency;
+	u32 cpu_dma_latency;
 };
 
 #endif
