@@ -19,6 +19,7 @@
 #include <linux/platform_device.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/module.h>
 #ifdef CONFIG_MSM_SSBI
 #include <linux/msm_ssbi.h>
 #endif

@@ -25,6 +25,7 @@
 #include <linux/msm_adc.h>
 #include <linux/syscore_ops.h>
 #include <mach/irqs.h>
+#include <linux/module.h>
 
 #define REG_MPP_BASE			0x50
 #define REG_IRQ_BASE			0x1BB
