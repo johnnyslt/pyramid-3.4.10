@@ -96,12 +96,8 @@ bool mhl_wakeuped = false;
 static bool g_bInitCompleted = false;
 static bool sii9244_interruptable = false;
 static bool need_simulate_cable_out = false;
-#ifdef CONFIG_INTERNAL_CHARGING_SUPPORT
 static bool g_bPollDetect = false;
-#ifdef CONFIG_ARCH_MSM8X60
 int htc_batt_turn_off_mhl_dongle_5v(void);
-#endif
-#endif
 static struct dentry *dbg_entry_dir, *dbg_entry_a3, *dbg_entry_a6, *dbg_entry_dbg_on;
 u8 dbg_drv_str_a3 = 0xEB, dbg_drv_str_a6 = 0x0C, dbg_drv_str_on = 0;
 void hdmi_set_switch_state(bool enable);
