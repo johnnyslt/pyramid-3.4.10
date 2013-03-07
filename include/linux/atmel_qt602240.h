@@ -423,7 +423,7 @@ struct atmel_cfg {
 
 struct atmel_mferr {
 	uint8_t cnt;
-	struct atmel_cfg *cfg;
+	struct atmel_cfg cfg;
 };
 
 struct atmel_i2c_platform_data {
@@ -481,6 +481,7 @@ struct atmel_i2c_platform_data {
 	struct atmel_mferr mferr_config;
 	struct atmel_mferr cfm_calb;
 	struct atmel_mferr cable_config;
+	struct atmel_mferr cable_cfg;
 	uint8_t noiseLine_config[8];
 	uint8_t workaround;
 #if defined(CONFIG_TOUCH_KEY_FILTER)
