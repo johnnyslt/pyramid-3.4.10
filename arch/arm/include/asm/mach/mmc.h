@@ -8,7 +8,7 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/sdio_func.h>
 #include <mach/gpio.h>
-
+#include <mach/msm_bus.h>
 #define SDC_DAT1_DISABLE 0
 #define SDC_DAT1_ENABLE  1
 #define SDC_DAT1_ENWAKE  2
@@ -45,6 +45,7 @@ struct msm_mmc_reg_data {
 	bool always_on;
 	/* is low power mode setting required for this regulator? */
 	bool lpm_sup;
+	bool reset_at_init;
 };
 
 /*
@@ -52,9 +53,17 @@ struct msm_mmc_reg_data {
  * regulators required for a SDCC slot.
  */
 struct msm_mmc_slot_reg_data {
+	struct msm_mmc_reg_data *vdd_data; 
+	struct msm_mmc_reg_data *vdd_io_data;
 	struct msm_mmc_reg_data *vdd_data; /* keeps VDD/VCC regulator info */
 	struct msm_mmc_reg_data *vccq_data; /* keeps VCCQ regulator info */
 	struct msm_mmc_reg_data *vddp_data; /* keeps VDD Pad regulator info */
+};
+
+struct msm_mmc_bus_voting_data {
+	struct msm_bus_scale_pdata *use_cases;
+	unsigned int *bw_vecs;
+	unsigned int bw_vecs_size;
 };
 
 struct msm_mmc_gpio {
@@ -123,23 +132,33 @@ struct mmc_platform_data {
 	unsigned int xpc_cap;
 	/* Supported UHS-I Modes */
 	unsigned int uhs_caps;
+	unsigned int uhs_caps2;
+	unsigned int *slot_type;
 	void (*sdio_lpm_gpio_setup)(struct device *, unsigned int);
         unsigned int status_irq;
 	unsigned int status_gpio;
+	bool is_status_gpio_active_low;
         unsigned int sdiowakeup_irq;
         unsigned long irq_flags;
 	unsigned dat0_gpio;
         unsigned long mmc_bus_width;
         int (*wpswitch) (struct device *);
-    int dummy52_required;
+	int dummy52_required;
 	unsigned int msmsdcc_fmin;
 	unsigned int msmsdcc_fmid;
 	unsigned int msmsdcc_fmax;
 	bool nonremovable;
+	bool hc_erase_group_def;
+	bool pack_cmd_support;
+	bool sanitize_support;
+	bool cache_support;
+	bool bkops_support;
+	unsigned int mpm_sdiowakeup_int;
 	bool pclk_src_dfab;
 	int (*cfg_mpm_sdiowakeup)(struct device *, unsigned);
 	bool sdcc_v4_sup;
 	unsigned int wpswitch_gpio;
+	bool is_wpswitch_active_low;
 	unsigned char wpswitch_polarity;
 	struct msm_mmc_slot_reg_data *vreg_data;
 	int is_sdio_al_client;
@@ -154,6 +173,7 @@ struct mmc_platform_data {
 	bool disable_runtime_pm;
 	bool disable_cmd23;
 	int emmc_dma_ch;
+	struct msm_mmc_bus_voting_data *msm_bus_voting_data;
 	u32 swfi_latency;
 };
 
