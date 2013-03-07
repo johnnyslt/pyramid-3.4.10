@@ -115,10 +115,10 @@
 #include "board-shooter_u.h"
 #include "devices.h"
 #include "devices-msm8x60.h"
-#include "cpuidle.h"
+#include <mach/cpuidle.h>
 #include "pm.h"
 #include "pm-boot.h"
-#include "mpm.h"
+#include <mach/mpm.h>
 #include "spm.h"
 #include "rpm_log.h"
 #include "timer.h"
@@ -1166,7 +1166,7 @@ static struct msm_otg_platform_data msm_otg_pdata = {
 	.mode			= USB_PERIPHERAL,
 	.otg_control		= OTG_PMIC_CONTROL,
 	.phy_type		= CI_45NM_INTEGRATED_PHY,
-	.vbus_power		= msm_hsusb_vbus_power,
+	//.vbus_power		= (*vbus_power)msm_hsusb_vbus_power,
 	.power_budget		= 750,
 	.ldo_3v3_name	= "8058_l6",
 	.ldo_1v8_name	= "8058_l7",
@@ -1295,7 +1295,6 @@ static struct platform_device htc_battery_pdev = {
 };
 #endif
 
-#ifdef CONFIG_SP3D
 static uint32_t sp3d_spi_gpio[] = {
 	/* or this? the i/o direction and up/down are much more correct */
 	GPIO_CFG(SHOOTER_U_SP3D_SPI_DO,  1, GPIO_CFG_OUTPUT, GPIO_CFG_PULL_DOWN, GPIO_CFG_8MA),
@@ -1339,9 +1338,7 @@ static uint32_t camera_on_gpio_table_sp3d[] = {
 	GPIO_CFG(SHOOTER_U_WEBCAM_STB	, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 	GPIO_CFG(SHOOTER_U_CAM_SEL		, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 };
-#endif
 
-#ifdef CONFIG_QS_S5K4E1
 static uint32_t camera_off_gpio_table_liteon[] = {
 	GPIO_CFG(SHOOTER_U_CAM_I2C_SDA	, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_8MA),/*i2c*/
 	GPIO_CFG(SHOOTER_U_CAM_I2C_SCL	, 1, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_8MA),/*i2c*/
@@ -1375,7 +1372,6 @@ static uint32_t camera_on_gpio_table_liteon[] = {
 	GPIO_CFG(SHOOTER_U_WEBCAM_STB	, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 	GPIO_CFG(SHOOTER_U_CAM_SEL		, 0, GPIO_CFG_OUTPUT, GPIO_CFG_NO_PULL, GPIO_CFG_2MA),
 };
-#endif
 
 static struct regulator *shooter_u_reg_8901_l6 = NULL;
 static struct regulator *shooter_u_reg_8058_l8 = NULL;
@@ -1759,7 +1755,7 @@ struct resource msm_camera_resources[] = {
 int aat1277_flashlight_control(int mode);
 static int flashlight_control(int mode)
 {
-#if CONFIG_FLASHLIGHT_AAT1277
+#ifdef CONFIG_FLASHLIGHT_AAT1277
 	return aat1277_flashlight_control(mode);
 #else
 	return 0;
@@ -2311,9 +2307,9 @@ static struct android_pmem_platform_data android_pmem_smipool_pdata = {
 	.allocator_type = PMEM_ALLOCATORTYPE_BITMAP,
 	.cached = 1,
 	.memory_type = MEMTYPE_SMI,
-	.request_region = pmem_request_smi_region,
-	.release_region = pmem_release_smi_region,
-	.setup_region = pmem_setup_smi_region,
+	.request_region = request_smi_region,
+	.release_region = release_smi_region,
+	.setup_region = setup_smi_region,
 	.map_on_demand = 1,
 };
 static struct platform_device android_pmem_smipool_device = {
@@ -2668,7 +2664,7 @@ static int configure_uart_gpios(int on)
 			msm_gpiomux_put(uart_gpios[i]);
 	return ret;
 }
-
+#ifdef CONFIG_BT
 static struct msm_serial_hs_platform_data msm_uart_dm1_pdata = {
 	.wakeup_irq = -1,
 	.inject_rx_on_wakeup = 0,
@@ -2690,6 +2686,7 @@ struct platform_device shooter_u_bcm_bt_lpm_device = {
 		.platform_data = &bcm_bt_lpm_pdata,
 	},
 };
+#endif 
 #endif
 
 #ifdef CONFIG_BT
@@ -3788,7 +3785,9 @@ static struct platform_device *shooter_u_devices[] __initdata = {
 #endif
 #ifdef CONFIG_SERIAL_MSM_HS
 	&msm_device_uart_dm1,
+#ifdef CONFIG_BT
 	&shooter_u_bcm_bt_lpm_device,
+#endif
 #endif
 #ifdef CONFIG_MSM_SSBI
 	&msm_device_ssbi_pmic1,
@@ -3881,7 +3880,9 @@ static struct platform_device *shooter_u_devices[] __initdata = {
 #endif
 
 	&msm_tsens_device,
-	&msm_rpm_device,
+#ifdef CONFIG_MSM_RPM
+	&msm8660_rpm_device,
+#endif
 	&cable_detect_device,
 #ifdef CONFIG_BT
 	&shooter_u_rfkill,
@@ -5393,7 +5394,6 @@ static void __init msm8x60_init_buses(void)
 #endif
 
 #if defined(CONFIG_USB_GADGET_MSM_72K) || defined(CONFIG_USB_EHCI_HCD)
-	msm_otg_pdata.swfi_latency = msm_rpmrs_levels[0].latency_us;
 	/*
 	 * We can not put USB regulators (8058_l6 and 8058_l7) in LPM
 	 * when we depend on USB PHY for VBUS/ID notifications. VBUS
@@ -5411,9 +5411,9 @@ static void __init msm8x60_init_buses(void)
 	bt_export_bd_address();
 #endif
 
-#ifdef CONFIG_SERIAL_MSM_HS
+/*#ifdef CONFIG_SERIAL_MSM_HS
 	msm_device_uart_dm1.dev.platform_data = &msm_uart_dm1_pdata;
-#endif
+#endif}*/
 
 #ifdef CONFIG_MSM_BUS_SCALING
 

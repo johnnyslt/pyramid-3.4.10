@@ -46,6 +46,9 @@ extern struct platform_device msm_pcm_hostless;
 
 #ifdef CONFIG_SPI_QUP
 extern struct platform_device msm_gsbi1_qup_spi_device;
+extern struct platform_device msm_gsbi2_qup_spi_device;
+extern struct platform_device msm_gsbi3_qup_spi_device;
+extern struct platform_device msm_gsbi8_qup_spi_device;
 extern struct platform_device msm_gsbi10_qup_spi_device;
 #endif
 
@@ -60,6 +63,7 @@ extern struct platform_device msm_device_smd;
 extern struct platform_device msm_device_gpio;
 extern struct platform_device msm_device_vidc;
 extern struct platform_device apq8064_msm_device_vidc;
+extern struct platform_device msm_camera_sensor_webcam;
 
 extern struct platform_device msm_charm_modem;
 extern struct platform_device msm_device_tz_log;

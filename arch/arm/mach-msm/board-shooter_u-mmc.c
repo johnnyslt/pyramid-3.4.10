@@ -40,7 +40,7 @@
 #include <mach/rpm.h>
 #include <mach/rpm-regulator.h>
 
-#include "mpm.h"
+#include <mach/mpm.h>
 #include "rpm_resources.h"
 
 int msm_proc_comm(unsigned cmd, unsigned *data1, unsigned *data2);
