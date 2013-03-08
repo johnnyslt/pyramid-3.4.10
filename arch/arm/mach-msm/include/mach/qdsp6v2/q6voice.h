@@ -40,7 +40,9 @@
 #define VOICE_DEV_ENABLED       0x1
 #define VOICE_DEV_DISABLED      0
 
-#define MAX_VOC_PKT_SIZE 322
+#define MAX_VOC_PKT_SIZE 642
+
+#define SESSION_NAME_LEN 20
 
 struct voice_header {
 	uint32_t id;
@@ -88,6 +90,10 @@ enum {
 #define VSS_IMVM_CMD_DETACH_STREAM			0x0001123D
 /* Detach a stream from the MVM. */
 
+#define VSS_IMVM_CMD_ATTACH_VOCPROC                    0x0001123E
+
+#define VSS_IMVM_CMD_DETACH_VOCPROC                    0x0001123F
+
 #define VSS_IMVM_CMD_START_VOICE			0x00011190
 /**< No payload. Wait for APRV2_IBASIC_RSP_RESULT response. */
 
@@ -111,7 +117,7 @@ enum {
 /* Set the voice timing parameters. */
 
 struct vss_imvm_cmd_create_full_control_session_t {
-	char name[20];
+	char name[SESSION_NAME_LEN];
 	/*
 	 * A variable-sized stream name.
 	 *
@@ -203,6 +209,11 @@ struct mvm_create_full_ctl_session_cmd {
 	struct vss_imvm_cmd_create_full_control_session_t mvm_session;
 } __packed;
 
+struct mvm_create_ctl_session_cmd {
+       struct apr_hdr hdr;
+       struct vss_imvm_cmd_create_full_control_session_t mvm_session;
+} __packed;
+
 struct mvm_set_tty_mode_cmd {
 	struct apr_hdr hdr;
 	struct vss_istream_cmd_set_tty_mode_t tty_mode;
@@ -282,7 +293,7 @@ struct mvm_set_voice_timing_cmd {
 /* Stop the in-call music delivery on the Tx voice path. */
 
 struct vss_istream_cmd_create_passive_control_session_t {
-	char name[20];
+	char name[SESSION_NAME_LEN];
 	/**<
 	* A variable-sized stream name.
 	*
@@ -325,7 +336,7 @@ struct vss_istream_cmd_create_full_control_session_t {
 	/* Rx vocoder type. (Refer to VSS_MEDIA_ID_XXX). */
 	uint32_t network_id;
 	/* Network ID. (Refer to VSS_NETWORK_ID_XXX). */
-	char name[20];
+	char name[SESSION_NAME_LEN];
 	/*
 	 * A variable-sized stream name.
 	 *
@@ -529,14 +540,21 @@ struct cvs_start_record_cmd {
 #define VSS_NETWORK_ID_VOIP_WV				0x00011242
 
 /* Media types */
+#define VSS_MEDIA_ID_13K_MODEM          0x00010FC1
 #define VSS_MEDIA_ID_EVRC_MODEM		0x00010FC2
 /* 80-VF690-47 CDMA enhanced variable rate vocoder modem format. */
 #define VSS_MEDIA_ID_AMR_NB_MODEM	0x00010FC6
+#define VSS_MEDIA_ID_4GV_NB_MODEM       0x00010FC3
+#define VSS_MEDIA_ID_4GV_WB_MODEM       0x00010FC4
 /* 80-VF690-47 UMTS AMR-NB vocoder modem format. */
 #define VSS_MEDIA_ID_AMR_WB_MODEM	0x00010FC7
 /* 80-VF690-47 UMTS AMR-WB vocoder modem format. */
+#define VSS_MEDIA_ID_EFR_MODEM          0x00010FC8
+#define VSS_MEDIA_ID_FR_MODEM           0x00010FC9
+#define VSS_MEDIA_ID_HR_MODEM           0x00010FCA
 #define VSS_MEDIA_ID_PCM_NB		0x00010FCB
 /* Linear PCM (16-bit, little-endian). */
+#define VSS_MEDIA_ID_PCM_WB             0x00010FCC
 #define VSS_MEDIA_ID_G711_ALAW		0x00010FCD
 /* G.711 a-law (contains two 10ms vocoder frames). */
 #define VSS_MEDIA_ID_G711_MULAW		0x00010FCE
@@ -658,12 +676,17 @@ typedef void (*dl_cb_fn)(uint8_t *voc_pkt,
 			 uint32_t *pkt_len,
 			 void *private_data);
 
+struct q_min_max_rate {
+       uint32_t min_rate;
+       uint32_t max_rate;
+};
 
 struct mvs_driver_info {
 	uint32_t media_type;
 	uint32_t rate;
 	uint32_t network_type;
 	uint32_t dtx_mode;
+	struct q_min_max_rate q_min_max_rate;
 	ul_cb_fn ul_cb;
 	dl_cb_fn dl_cb;
 	void *private_data;
@@ -693,6 +716,7 @@ struct voice_data {
 	/* cache the values related to Rx and Tx */
 	struct device_data dev_rx;
 	struct device_data dev_tx;
+
 
 	/* these default values are for all devices */
 	uint32_t default_mute_val;
@@ -741,6 +765,42 @@ struct voice_data {
 	struct incall_rec_info rec_info;
 
 	struct incall_music_info music_info;
+
+	u16 session_id;
+};
+
+#define MAX_VOC_SESSIONS 2
+#define SESSION_ID_BASE 0xFFF0
+
+struct common_data {
+	uint32_t voc_path;
+	uint32_t adsp_version;
+	uint32_t device_events;
+
+
+	uint32_t default_mute_val;
+	uint32_t default_vol_val;
+	uint32_t default_sample_val;
+
+
+	void *apr_mvm;
+
+	void *apr_cvs;
+
+	void *apr_cvp;
+
+
+	void *apr_q6_mvm;
+
+	void *apr_q6_cvs;
+
+	void *apr_q6_cvp;
+
+	struct mutex common_lock;
+
+	struct mvs_driver_info mvs_info;
+
+	struct voice_data voice[MAX_VOC_SESSIONS];
 };
 
 int voice_set_voc_path_full(uint32_t set);
@@ -757,4 +817,6 @@ void voice_config_vocoder(uint32_t media_type,
 int voice_start_record(uint32_t rec_mode, uint32_t set);
 
 int voice_start_playback(uint32_t set);
+u16 voice_get_session_id(const char *name);
+
 #endif
