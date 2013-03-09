@@ -34,9 +34,9 @@
 #include <sound/control.h>
 #include <asm/dma.h>
 #include <asm/mach-types.h>
-#include <mach/qdsp6v2_1x/snddev_icodec.h>
-#include <mach/qdsp6v2_1x/audio_dev_ctl.h>
-#include <mach/qdsp6v2_1x/q6afe.h>
+#include <mach/qdsp6v2/snddev_icodec.h>
+#include <mach/qdsp6v2/audio_dev_ctl.h>
+#include <mach/qdsp6v2/q6afe.h>
 
 #define LOOPBACK_ENABLE         0x1
 #define LOOPBACK_DISABLE        0x0
