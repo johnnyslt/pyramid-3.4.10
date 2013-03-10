@@ -3638,7 +3638,6 @@ static struct platform_device pm8058_leds = {
 };
 
 #ifdef CONFIG_FB_MSM_HDMI_MHL
-static int pm8901_mpp_init(void);
 static struct regulator *reg_8901_l0;
 static struct regulator *reg_8058_l19;
 static struct regulator *reg_8901_l3;
@@ -3768,7 +3767,6 @@ static int mhl_sii9234_power(int on)
 		break;
 	case 1:
 		mhl_sii9234_all_power(true);
-		pm8901_mpp_init();
 		config_gpio_table(mhl_gpio_table, ARRAY_SIZE(mhl_gpio_table));
 		break;
 	default:
@@ -4978,68 +4976,6 @@ static struct spi_board_info msm_spi_board_info[] __initdata = {
 #ifdef CONFIG_PMIC8901
 
 #define PM8901_GPIO_INT           91
-
-#ifdef CONFIG_FB_MSM_HDMI_MHL
-static int pm8901_mpp_init(void)
-{
-    int rc;
-    pr_err("%s\n", __func__);
-
-    rc = pm8901_mpp_config(0, PM_MPP_TYPE_D_BI_DIR,
-		PM8901_MPP_DIG_LEVEL_MSMIO,
-		PM_MPP_BI_PULLUP_10KOHM);
-	if (rc)
-		pr_err("%s: pm8901_mpp_config failed with %d\n", __func__, rc);
-
-	rc = pm8901_mpp_config(1, PM_MPP_TYPE_D_BI_DIR,
-		PM8901_MPP_DIG_LEVEL_L5,
-		PM_MPP_BI_PULLUP_10KOHM);
-	if (rc)
-		pr_err("%s: pm8901_mpp_config failed with %d\n", __func__, rc);
-
-	rc = pm8901_mpp_config(2, PM_MPP_TYPE_D_BI_DIR,
-		PM8901_MPP_DIG_LEVEL_MSMIO,
-		PM_MPP_BI_PULLUP_10KOHM);
-
-	if (rc)
-		pr_err("%s: pm8901_mpp_config failed with %d\n", __func__, rc);
-
-	rc = pm8901_mpp_config(3, PM_MPP_TYPE_D_BI_DIR,
-		PM8901_MPP_DIG_LEVEL_L5,
-		PM_MPP_BI_PULLUP_10KOHM);
-
-	if (rc)
-		pr_err("%s: pm8901_mpp_config failed with %d\n", __func__, rc);
-
-	return rc;
-}
-#endif
-
-static struct pm8901_gpio_platform_data pm8901_mpp_data = {
-	.gpio_base	= PM8901_GPIO_PM_TO_SYS(0),
-	.irq_base	= PM8901_MPP_IRQ(PM8901_IRQ_BASE, 0),
-};
-
-static struct resource pm8901_temp_alarm[] = {
-	{
-		.start = PM8901_TEMP_ALARM_IRQ(PM8901_IRQ_BASE),
-		.end = PM8901_TEMP_ALARM_IRQ(PM8901_IRQ_BASE),
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.start = PM8901_TEMP_HI_ALARM_IRQ(PM8901_IRQ_BASE),
-		.end = PM8901_TEMP_HI_ALARM_IRQ(PM8901_IRQ_BASE),
-		.flags = IORESOURCE_IRQ,
-	},
-};
-
-/*
- * Consumer specific regulator names:
- *			 regulator name		consumer dev_name
- */
-static struct regulator_consumer_supply vreg_consumers_8901_MPP0[] = {
-	REGULATOR_SUPPLY("8901_mpp0",		NULL),
-};
 static struct regulator_consumer_supply vreg_consumers_8901_USB_OTG[] = {
 	REGULATOR_SUPPLY("8901_usb_otg",	NULL),
 };
@@ -5048,8 +4984,8 @@ static struct regulator_consumer_supply vreg_consumers_8901_HDMI_MVS[] = {
 };
 
 #define PM8901_VREG_INIT(_id, _min_uV, _max_uV, _modes, _ops, _apply_uV, \
-			 _always_on, _active_high) \
-	[PM8901_VREG_ID_##_id] = { \
+			 _always_on, _pd) \
+	{ \
 		.init_data = { \
 			.constraints = { \
 				.valid_modes_mask = _modes, \
@@ -5064,80 +5000,49 @@ static struct regulator_consumer_supply vreg_consumers_8901_HDMI_MVS[] = {
 			.num_consumer_supplies = \
 				ARRAY_SIZE(vreg_consumers_8901_##_id), \
 		}, \
-		.active_high = _active_high, \
+		.id = PM8901_VREG_ID_##_id, \
+		.pull_down_enable = _pd, \
 	}
 
-#define PM8901_VREG_INIT_MPP(_id, _active_high) \
+#define PM8901_VREG_INIT_VS(_id, _pd) \
 	PM8901_VREG_INIT(_id, 0, 0, REGULATOR_MODE_NORMAL, \
-			REGULATOR_CHANGE_STATUS, 0, 0, _active_high)
+			REGULATOR_CHANGE_STATUS, 0, 0, _pd)
 
-#define PM8901_VREG_INIT_VS(_id) \
-	PM8901_VREG_INIT(_id, 0, 0, REGULATOR_MODE_NORMAL, \
-			REGULATOR_CHANGE_STATUS, 0, 0, 0)
-
-static struct pm8901_vreg_pdata pm8901_vreg_init_pdata[PM8901_VREG_MAX] = {
-	PM8901_VREG_INIT_MPP(MPP0, 1),
-
-	PM8901_VREG_INIT_VS(USB_OTG),
-	PM8901_VREG_INIT_VS(HDMI_MVS),
+static struct pm8901_vreg_pdata pm8901_vreg_init[] = {
+	PM8901_VREG_INIT_VS(USB_OTG, 1),
+	PM8901_VREG_INIT_VS(HDMI_MVS, 0),
 };
 
-#define PM8901_VREG(_id) { \
-	.name = "pm8901-regulator", \
-	.id = _id, \
-	.platform_data = &pm8901_vreg_init_pdata[_id], \
-	.pdata_size = sizeof(pm8901_vreg_init_pdata[_id]), \
-}
-
-static struct mfd_cell pm8901_subdevs[] = {
-	{	.name = "pm8901-mpp",
-		.id		= -1,
-		.platform_data	= &pm8901_mpp_data,
-		.pdata_size      = sizeof(pm8901_mpp_data),
-	},
-	{	.name = "pm8901-tm",
-		.id		= -1,
-		.num_resources  = ARRAY_SIZE(pm8901_temp_alarm),
-		.resources      = pm8901_temp_alarm,
-	},
-	PM8901_VREG(PM8901_VREG_ID_MPP0),
-	PM8901_VREG(PM8901_VREG_ID_USB_OTG),
-	PM8901_VREG(PM8901_VREG_ID_HDMI_MVS),
+static struct pm8xxx_misc_platform_data pm8901_misc_pdata = {
+	.priority		= 1,
 };
 
-#ifdef CONFIG_MSM_SSBI
+static struct pm8xxx_irq_platform_data pm8901_irq_pdata = {
+	.irq_base		= PM8901_IRQ_BASE,
+	.devirq			= MSM_GPIO_TO_INT(PM8901_GPIO_INT),
+	.irq_trigger_flag	= IRQF_TRIGGER_LOW,
+};
+
+static struct pm8xxx_mpp_platform_data pm8901_mpp_pdata = {
+	.mpp_base		= PM8901_MPP_PM_TO_SYS(0),
+};
+
 static struct pm8901_platform_data pm8901_platform_data = {
-        .irq_base = PM8901_IRQ_BASE,
-        .irq = MSM_GPIO_TO_INT(PM8901_GPIO_INT),
-        .num_subdevs = ARRAY_SIZE(pm8901_subdevs),
-        .sub_devices = pm8901_subdevs,
-        .irq_trigger_flags = IRQF_TRIGGER_LOW,
+	.irq_pdata		= &pm8901_irq_pdata,
+	.mpp_pdata		= &pm8901_mpp_pdata,
+	.regulator_pdatas	= pm8901_vreg_init,
+	.num_regulators		= ARRAY_SIZE(pm8901_vreg_init),
+	.misc_pdata		= &pm8901_misc_pdata,
 };
+
 static struct msm_ssbi_platform_data msm8x60_ssbi_pm8901_pdata __devinitdata = {
 	.controller_type = MSM_SBI_CTRL_PMIC_ARBITER,
 	.slave	= {
-		.name			= "pm8901-core",
-		.platform_data		= &pm8901_platform_data,
-	},
-};
-#else
-static struct pm8901_platform_data pm8901_platform_data = {
-	.irq_base = PM8901_IRQ_BASE,
-	.num_subdevs = ARRAY_SIZE(pm8901_subdevs),
-	.sub_devices = pm8901_subdevs,
-	.irq_trigger_flags = IRQF_TRIGGER_LOW,
-};
-
-static struct i2c_board_info pm8901_boardinfo[] __initdata = {
-	{
-		I2C_BOARD_INFO("pm8901-core", 0x55),
-		.irq = MSM_GPIO_TO_INT(PM8901_GPIO_INT),
+		.name = "pm8901-core",
 		.platform_data = &pm8901_platform_data,
 	},
 };
 #endif
-
-#endif /* CONFIG_PMIC8901 */
 
 #if defined(CONFIG_MARIMBA_CORE) && (defined(CONFIG_GPIO_SX150X) \
 	|| defined(CONFIG_GPIO_SX150X_MODULE))
@@ -5348,9 +5253,9 @@ static struct i2c_registry msm8x60_i2c_devices[] __initdata = {
 
 static void fixup_i2c_configs(void)
 {
-#ifdef CONFIG_I2C
-	pm8901_vreg_init_pdata[PM8901_VREG_ID_MPP0].active_high = 1;
-#endif
+//#ifdef CONFIG_I2C
+//	pm8901_vreg_init_pdata[PM8901_VREG_ID_MPP0].active_high = 1;
+//#endif
 }
 
 static void register_i2c_devices(void)
