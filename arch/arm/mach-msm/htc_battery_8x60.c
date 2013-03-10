@@ -33,6 +33,8 @@
 #include <linux/miscdevice.h>
 #include <linux/msm_adc.h>
 #include <linux/mfd/pmic8058.h>
+#include <linux/mfd/pm8xxx/batt-alarm.h>
+
 #include <mach/mpp.h>
 #include <linux/android_alarm.h>
 #include <linux/suspend.h>
