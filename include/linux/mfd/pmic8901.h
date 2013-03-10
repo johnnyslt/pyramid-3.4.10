@@ -32,12 +32,17 @@
 #define PM8901_TEMPSTAT_IRQ		PM8901_IRQ_BLOCK_BIT(6, 4)
 #define PM8901_OVERTEMP_IRQ		PM8901_IRQ_BLOCK_BIT(6, 5)
 
+
 struct pm8901_platform_data {
 	struct pm8xxx_irq_platform_data		*irq_pdata;
 	struct pm8xxx_mpp_platform_data		*mpp_pdata;
 	struct pm8xxx_misc_platform_data	*misc_pdata;
 	struct pm8901_vreg_pdata		*regulator_pdatas;
 	int					num_regulators;
+};
+struct pm8901_gpio_platform_data {
+	int	gpio_base;
+	int	irq_base;
 };
 
 #endif 
