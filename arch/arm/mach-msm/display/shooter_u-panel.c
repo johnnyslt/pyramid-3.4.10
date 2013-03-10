@@ -30,6 +30,7 @@
 #include <mach/panel_id.h>
 #include <mach/msm_bus_board.h>
 #include <linux/mfd/pmic8058.h>
+#include <linux/leds-pm8058.h>
 #include <linux/leds.h>
 #include <mach/debug_display.h>
 #include <linux/msm_mdp.h>
@@ -37,6 +38,7 @@
 #include "../board-shooter_u.h"
 #include "../devices-msm8x60.h"
 #include "../../../../drivers/video/msm/mdp.h"
+
 
 enum MODE_3D {
 	BARRIER_OFF       = 0,
