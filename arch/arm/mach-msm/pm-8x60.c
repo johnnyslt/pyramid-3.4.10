@@ -124,6 +124,21 @@ module_param_named(
 );
 
 extern int board_mfg_mode(void);
+static struct msm_pm_platform_data *msm_pm_modes;
+static int rpm_cpu0_wakeup_irq;
+
+void __init msm_pm_set_platform_data(
+	struct msm_pm_platform_data *data, int count)
+{
+	BUG_ON(MSM_PM_SLEEP_MODE_NR * num_possible_cpus() > count);
+	msm_pm_modes = data;
+}
+
+void __init msm_pm_set_rpm_wakeup_irq(unsigned int irq)
+{
+	rpm_cpu0_wakeup_irq = irq;
+}
+
 #ifdef CONFIG_APQ8064_ONLY 
 extern unsigned long acpuclk_8960_power_collapse(void);
 #endif
