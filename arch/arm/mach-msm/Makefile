@@ -179,10 +179,10 @@ obj-$(CONFIG_ARCH_QSD8X50) += devices-qsd8x50.o clock-pcom-lookup.o
 obj-$(CONFIG_MACH_QSD8X50_SURF) += board-qsd8x50.o
 obj-$(CONFIG_MACH_QSD8X50_FFA) += board-qsd8x50.o
 obj-$(CONFIG_ARCH_MSM8X60) += devices-msm8x60.o clock-local.o clock-8x60.o acpuclock-8x60.o clock-pll.o
-obj-$(CONFIG_ARCH_MSM8X60) += clock-rpm.o
-obj-$(CONFIG_ARCH_MSM8X60) += saw-regulator.o
-obj-$(CONFIG_ARCH_MSM8X60) += footswitch-8x60.o
-obj-$(CONFIG_ARCH_MSM8960) += htc_acoustic_8960.o
+obj-$(CONFIG_ARCH_MSM8X60) += clock-rpm.o htc_wifi_nvs.o
+obj-$(CONFIG_ARCH_MSM8X60) += saw-regulator.o htc_util.o
+obj-$(CONFIG_ARCH_MSM8X60) += footswitch-8x60.o socinfo.o
+obj-$(CONFIG_ARCH_MSM8960) += htc_acoustic_8960.o htc_sysinfo.o
 obj-$(CONFIG_MSM8X60_AUDIO) += htc_acoustic_8x60.o
 
 ifdef CONFIG_MSM_RPM_REGULATOR
@@ -213,22 +213,20 @@ obj-$(CONFIG_MSM_MODEM_8960) += modem-8960.o
 obj-$(CONFIG_MSM_LPASS_8960) += lpass-8960.o
 obj-$(CONFIG_MSM_WCNSS_SSR_8960) += wcnss-ssr-8960.o
 obj-$(CONFIG_MSM_GSS_SSR_8064) += gss-8064.o
-
-ifdef CONFIG_CPU_IDLE
+ifdef CONFIG_CPUIDLE
 	obj-$(CONFIG_ARCH_APQ8064) += cpuidle.o
 	obj-$(CONFIG_ARCH_MSM8960) += cpuidle.o
 	obj-$(CONFIG_ARCH_MSM8X60) += cpuidle.o
 	obj-$(CONFIG_ARCH_MSM9615) += cpuidle.o
 	obj-$(CONFIG_ARCH_MSM8974) += cpuidle.o
 endif
-
 ifdef CONFIG_BT
 	obj-$(CONFIG_MACH_MONARUDO) += board-monarudo-rfkill.o  htc_bdaddress.o
 endif
 
-#ifdef CONFIG_MSM_CAMERA_V4L2
-#	obj-$(CONFIG_ARCH_MSM8X60) += board-msm8x60-camera.o
-#endif
+ifdef CONFIG_MSM_CAMERA_V4L2
+	obj-$(CONFIG_ARCH_MSM8X60) += board-msm8x60-camera.o
+endif
 obj-$(CONFIG_ARCH_FSM9XXX) += devices-fsm9xxx.o
 obj-$(CONFIG_ARCH_FSM9XXX) += clock-fsm9xxx.o clock-local.o acpuclock-fsm9xxx.o
 obj-$(CONFIG_ARCH_FSM9XXX) += dfe-fsm9xxx.o rfic-fsm9xxx.o
@@ -414,7 +412,7 @@ obj-$(CONFIG_MSM_OCMEM) += ocmem_sched.o ocmem_api.o
 obj-$(CONFIG_ARCH_MSM7X27) += gpiomux-7x27.o gpiomux-v1.o gpiomux.o
 obj-$(CONFIG_ARCH_MSM7X30) += gpiomux-7x30.o gpiomux-v1.o gpiomux.o
 obj-$(CONFIG_ARCH_QSD8X50) += gpiomux-8x50.o gpiomux-v1.o gpiomux.o
-obj-$(CONFIG_ARCH_MSM8X60) += gpiomux-8x60.o gpiomux-v2.o gpiomux.o
+obj-$(CONFIG_ARCH_MSM8X60) += gpiomux-8x60.o gpiomux-v2.o gpiomux.o devices_htc.o cpuidle.o
 obj-$(CONFIG_ARCH_MSM8960) += gpiomux-v2.o gpiomux.o
 obj-$(CONFIG_ARCH_APQ8064) += gpiomux-v2.o gpiomux.o
 obj-$(CONFIG_ARCH_MSM9615) += gpiomux-v2.o gpiomux.o

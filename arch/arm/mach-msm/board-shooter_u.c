@@ -6660,8 +6660,8 @@ static void __init msm8x60_init(struct msm_board_data *board_data)
 
 	msm8x60_cfg_smsc911x();
 	if (SOCINFO_VERSION_MAJOR(socinfo_get_version()) != 1)
-		platform_add_devices(msm_footswitch_devices,
-				     msm_num_footswitch_devices);
+		platform_add_devices(msm8660_footswitch,
+				     msm8660_num_footswitch);
 	platform_add_devices(shooter_u_devices,
 			     ARRAY_SIZE(shooter_u_devices));
 
