@@ -56,7 +56,7 @@ static inline int pm8xxx_irq_exit(struct pm_irq_chip *chip)
 {
 	return -ENXIO;
 }
-static inline int __devexit pm8xxx_irq_exit(struct pm_irq_chip *chip)
+static inline int pm8xxx_irq_exit(struct pm_irq_chip *chip)
 {
 	return -ENXIO;
 }
