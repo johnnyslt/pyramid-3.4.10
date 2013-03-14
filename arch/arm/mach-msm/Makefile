@@ -183,7 +183,7 @@ obj-$(CONFIG_ARCH_MSM8X60) += clock-rpm.o htc_wifi_nvs.o
 obj-$(CONFIG_ARCH_MSM8X60) += saw-regulator.o htc_util.o
 obj-$(CONFIG_ARCH_MSM8X60) += footswitch-8x60.o socinfo.o
 obj-$(CONFIG_ARCH_MSM8960) += htc_acoustic_8960.o htc_sysinfo.o
-obj-$(CONFIG_MSM8X60_AUDIO) += htc_acoustic_8x60.o
+obj-$(CONFIG_MSM8X60_AUDIO) += htc_acoustic_8x60.o sysinfo-8x60.o
 
 ifdef CONFIG_MSM_RPM_REGULATOR
 obj-y += rpm-regulator.o
@@ -412,7 +412,7 @@ obj-$(CONFIG_MSM_OCMEM) += ocmem_sched.o ocmem_api.o
 obj-$(CONFIG_ARCH_MSM7X27) += gpiomux-7x27.o gpiomux-v1.o gpiomux.o
 obj-$(CONFIG_ARCH_MSM7X30) += gpiomux-7x30.o gpiomux-v1.o gpiomux.o
 obj-$(CONFIG_ARCH_QSD8X50) += gpiomux-8x50.o gpiomux-v1.o gpiomux.o
-obj-$(CONFIG_ARCH_MSM8X60) += gpiomux-8x60.o gpiomux-v2.o gpiomux.o devices_htc.o cpuidle.o
+obj-$(CONFIG_ARCH_MSM8X60) += gpiomux-8x60.o gpiomux-v2.o gpiomux.o devices_htc.o
 obj-$(CONFIG_ARCH_MSM8960) += gpiomux-v2.o gpiomux.o
 obj-$(CONFIG_ARCH_APQ8064) += gpiomux-v2.o gpiomux.o
 obj-$(CONFIG_ARCH_MSM9615) += gpiomux-v2.o gpiomux.o
