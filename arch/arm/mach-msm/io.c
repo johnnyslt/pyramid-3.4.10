@@ -154,8 +154,8 @@ static struct map_desc msm8x60_io_desc[] __initdata = {
 		.type =     MT_DEVICE,
 	},
 	MSM_DEVICE(QFPROM),
-	MSM_DEVICE(KERNEL_FOOTPRINT),
-	MSM_DEVICE(KALLSYMS_SAVE),
+//	MSM_DEVICE(KERNEL_FOOTPRINT),
+//	MSM_DEVICE(KALLSYMS_SAVE),
 };
 
 void __init msm_map_msm8x60_io(void)
@@ -196,8 +196,8 @@ static struct map_desc msm8960_io_desc[] __initdata = {
 	MSM_DEVICE(DEBUG_UART),
 #endif
 	MSM_CHIP_DEVICE(QFPROM, MSM8960),
-	MSM_DEVICE(KERNEL_FOOTPRINT),
-	MSM_DEVICE(KALLSYMS_SAVE),
+//	MSM_DEVICE(KERNEL_FOOTPRINT),
+//	MSM_DEVICE(KALLSYMS_SAVE),
 };
 
 void __init msm_map_msm8960_io(void)
@@ -237,8 +237,8 @@ static struct map_desc msm8930_io_desc[] __initdata = {
 	MSM_DEVICE(DEBUG_UART),
 #endif
 	MSM_CHIP_DEVICE(QFPROM, MSM8930),
-	MSM_DEVICE(KERNEL_FOOTPRINT),
-	MSM_DEVICE(KALLSYMS_SAVE),
+//	MSM_DEVICE(KERNEL_FOOTPRINT),
+//	MSM_DEVICE(KALLSYMS_SAVE),
 };
 
 void __init msm_map_msm8930_io(void)
@@ -279,8 +279,8 @@ static struct map_desc apq8064_io_desc[] __initdata = {
 	},
 	MSM_CHIP_DEVICE(QFPROM, APQ8064),
 	MSM_CHIP_DEVICE(SIC_NON_SECURE, APQ8064),
-	MSM_DEVICE(KERNEL_FOOTPRINT),
-	MSM_DEVICE(KALLSYMS_SAVE),
+//	MSM_DEVICE(KERNEL_FOOTPRINT),
+//	MSM_DEVICE(KALLSYMS_SAVE),
 #ifdef CONFIG_DEBUG_APQ8064_UART
 	MSM_DEVICE(DEBUG_UART),
 #endif
