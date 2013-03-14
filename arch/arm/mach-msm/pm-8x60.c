@@ -146,8 +146,8 @@ extern unsigned long acpuclk_8960_power_collapse(void);
 #define CPU_FOOT_PRINT_BASE_CPU0_VIRT		(MSM_KERNEL_FOOTPRINT_BASE + 0x0)
 static void set_cpu_foot_print(unsigned cpu, unsigned state)
 {
-	unsigned *status = (unsigned *)CPU_FOOT_PRINT_BASE_CPU0_VIRT + cpu;
-	*status = (CPU_FOOT_PRINT_MAGIC | state);
+/*	unsigned *status = (unsigned *)CPU_FOOT_PRINT_BASE_CPU0_VIRT + cpu;
+	*status = (CPU_FOOT_PRINT_MAGIC | state);*/
 	mb();
 }
 
@@ -155,26 +155,26 @@ static void set_cpu_foot_print(unsigned cpu, unsigned state)
 #define CPU_RESET_VECTOR_CPU0_BASE	(MSM_KERNEL_FOOTPRINT_BASE + 0x28)
 static void clean_reset_vector_debug_info(unsigned cpu)
 {
-	unsigned *reset_vector = (unsigned *)CPU_RESET_VECTOR_CPU0_BASE;
-	reset_vector[cpu] = RESET_VECTOR_CLEAN_MAGIC;
+	/*unsigned *reset_vector = (unsigned *)CPU_RESET_VECTOR_CPU0_BASE;
+	reset_vector[cpu] = RESET_VECTOR_CLEAN_MAGIC;*/
 	mb();
 }
 
 #define SAVE_MSM_PM_BOOT_ENTRY_BASE		(MSM_KERNEL_FOOTPRINT_BASE + 0x20)
 static void store_pm_boot_entry_addr(void)
 {
-	unsigned *addr;
+	/*unsigned *addr;
 	addr = (unsigned *)SAVE_MSM_PM_BOOT_ENTRY_BASE;
-	*addr = (unsigned)virt_to_phys(msm_pm_boot_entry);
+	*addr = (unsigned)virt_to_phys(msm_pm_boot_entry);*/
 	mb();
 }
 
 #define SAVE_MSM_PM_BOOT_VECTOR_BASE			(MSM_KERNEL_FOOTPRINT_BASE + 0x24)
 static void store_pm_boot_vector_addr(unsigned value)
 {
-	unsigned *addr;
+	/*unsigned *addr;
 	addr = (unsigned *)SAVE_MSM_PM_BOOT_VECTOR_BASE;
-	*addr = (unsigned)value;
+	*addr = (unsigned)value;*/
 	mb();
 }
 

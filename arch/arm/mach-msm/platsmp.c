@@ -41,10 +41,10 @@ extern void msm_secondary_startup(void);
 #define CPU3_EXIT_KERNEL_COUNTER_BASE			(MSM_KERNEL_FOOTPRINT_BASE + 0x1C)
 static void init_cpu_debug_counter_for_cold_boot(void)
 {
-	*(unsigned *)CPU0_EXIT_KERNEL_COUNTER_BASE = 0x0;
+/*	*(unsigned *)CPU0_EXIT_KERNEL_COUNTER_BASE = 0x0;
 	*(unsigned *)CPU1_EXIT_KERNEL_COUNTER_BASE = 0x0;
 	*(unsigned *)CPU2_EXIT_KERNEL_COUNTER_BASE = 0x0;
-	*(unsigned *)CPU3_EXIT_KERNEL_COUNTER_BASE = 0x0;
+	*(unsigned *)CPU3_EXIT_KERNEL_COUNTER_BASE = 0x0;*/
 	mb();
 }
 
